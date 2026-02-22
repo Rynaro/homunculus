@@ -1,0 +1,99 @@
+[gateway]
+host = "127.0.0.1"  # NEVER 0.0.0.0
+port = 18789
+auth_token_hash = ""  # bcrypt hash, set via env
+
+[models.local]
+provider = "ollama"
+# host.docker.internal = Ollama on host. For Ollama in Docker (ollama profile), set OLLAMA_BASE_URL=http://ollama:11434 in .env
+base_url = "http://host.docker.internal:11434"
+default_model = "qwen2.5:14b"
+context_window = 32768
+temperature = 0.7
+# Request timeout in seconds (180-300 recommended for 14B with long context)
+timeout_seconds = 300
+
+[models.escalation]
+provider = "anthropic"
+enabled = true  # Set to false (or ESCALATION_ENABLED=false env) for local-only mode
+# API key from ANTHROPIC_API_KEY env var, never in config
+model = "claude-sonnet-4-20250514"
+context_window = 200000
+temperature = 0.3
+# Budget: max USD per day
+daily_budget_usd = 2.0
+
+[agent]
+max_turns = 25
+max_execution_time_seconds = 300
+workspace_path = "./workspace"
+
+[tools]
+approval_mode = "elevated"  # off | elevated | always
+safe_commands = ["ls", "cat", "grep", "find", "wc", "head", "tail", "date", "echo", "pwd"]
+blocked_patterns = ["rm -rf /", "mkfs", "dd if=", "> /dev/"]
+
+[tools.web]
+max_post_body_size = 102400
+max_web_sessions = 10
+web_session_ttl = 3600
+allowed_methods = ["GET", "POST"]
+
+[tools.sandbox]
+enabled = true
+image = "homunculus-sandbox:latest"
+network = "none"
+memory_limit = "512m"
+cpu_limit = "1.0"
+read_only_root = true
+drop_capabilities = ["ALL"]
+no_new_privileges = true
+
+[tools.mqtt]
+broker_host = "localhost"
+broker_port = 1883
+username = ""  # Override via MQTT_USERNAME env var
+password = ""  # Override via MQTT_PASSWORD env var
+client_id = "homunculus-agent"
+allowed_topics = ["home/#", "sensors/#"]
+blocked_topics = ["home/security/#", "home/locks/#"]
+
+[memory]
+backend = "sqlite"
+db_path = "./data/memory.db"
+embedding_provider = "local"  # local (ollama) | anthropic
+embedding_model = "nomic-embed-text"
+max_context_tokens = 4096
+
+[security]
+audit_log_path = "./data/audit.jsonl"
+require_confirmation = ["shell_exec", "file_write", "send_message", "web_fetch", "web_extract", "mqtt_publish", "scheduler_manage"]
+
+[security.content_pipeline]
+enabled = true
+max_web_content_size = 50000
+injection_detection = true
+
+[scheduler]
+enabled = true
+db_path = "./data/scheduler.db"
+
+[scheduler.heartbeat]
+enabled = true
+cron = "*/30 8-22 * * *"  # Every 30 min during waking hours
+model = "local"
+active_hours_start = 8
+active_hours_end = 22
+timezone = "UTC"  # Set to your local IANA timezone, e.g. America/New_York, Europe/London
+
+[scheduler.notification]
+max_per_hour = 10
+quiet_hours_queue = true
+
+[interfaces.telegram]
+enabled = false
+# Bot token from TELEGRAM_BOT_TOKEN env var, never in config
+allowed_user_ids = []  # Your Telegram user ID(s) — REQUIRED for security
+session_timeout_minutes = 30
+max_message_length = 4096
+typing_indicator = true

@@ -1,0 +1,52 @@
+# Ruby
+*.gem
+*.rbc
+/.config
+/coverage/
+/InstalledFiles
+/pkg/
+/spec/reports/
+/spec/examples.txt
+/test/tmp/
+/test/version_tmp/
+/tmp/
+
+# Bundler
+/.bundle/
+/vendor/bundle
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Data & persistence
+/data/
+*.db
+*.db-journal
+
+# Logs
+/log/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+docker-compose.override.yml
+
+# Workspace — contains personal context files (SOUL.md, USER.md, AGENTS.md),
+# memory logs, skills, and agents. Users maintain their own workspace locally.
+/workspace/
+
+# Model fleet config — users maintain their own config/models.toml locally.
+# See config/models.toml.example for the template.
+/config/models.toml
+
+# Audit logs (sensitive)
+/data/audit.jsonl

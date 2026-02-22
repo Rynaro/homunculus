@@ -1,0 +1,136 @@
+plugins:
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 3.4
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - "vendor/**/*"
+    - "data/**/*"
+    - "workspace/**/*"
+    - "agents/**/*"
+
+# --- Layout ---
+
+Layout/LineLength:
+  Max: 130
+  AllowedPatterns:
+    - '^\s*#'  # Allow long comments
+
+# --- Metrics ---
+# Relaxed to accommodate existing codebase complexity.
+# Tighten gradually as code is refactored.
+
+Metrics/MethodLength:
+  Max: 50
+
+Metrics/ClassLength:
+  Max: 700
+
+Metrics/ModuleLength:
+  Max: 200
+  Exclude:
+    - "bin/*"
+
+Metrics/BlockLength:
+  Max: 45
+  Exclude:
+    - "spec/**/*"
+    - "Rakefile"
+
+Metrics/AbcSize:
+  Max: 60
+
+Metrics/CyclomaticComplexity:
+  Max: 18
+
+Metrics/PerceivedComplexity:
+  Max: 18
+
+Metrics/ParameterLists:
+  Max: 7
+
+# --- Lint ---
+
+Lint/UnusedMethodArgument:
+  AllowUnusedKeywordArguments: true
+  IgnoreEmptyMethods: true
+  Exclude:
+    - "lib/homunculus/tools/**/*"
+    - "bin/*"
+
+Lint/MissingSuper:
+  Enabled: false
+
+Lint/DuplicateBranch:
+  Enabled: false
+
+# --- Naming ---
+
+Naming/MethodParameterName:
+  MinNameLength: 1
+
+Naming/PredicateMethod:
+  Enabled: false
+
+# --- Style ---
+
+Style/Documentation:
+  Enabled: false
+
+Style/FrozenStringLiteralComment:
+  Enabled: true
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+  Exclude:
+    - "Gemfile"
+
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes
+
+Style/GlobalVars:
+  Exclude:
+    - "bin/*"
+
+Style/MultilineBlockChain:
+  Enabled: false
+
+# --- RSpec ---
+
+RSpec/ExampleLength:
+  Max: 30
+
+RSpec/MultipleExpectations:
+  Max: 10
+
+RSpec/NestedGroups:
+  Max: 4
+
+RSpec/MultipleMemoizedHelpers:
+  Max: 10
+
+RSpec/SpecFilePathFormat:
+  Enabled: false
+
+RSpec/DescribeClass:
+  Enabled: false
+
+RSpec/SubjectStub:
+  Enabled: false
+
+RSpec/MultipleDescribes:
+  Enabled: false
+
+RSpec/MessageSpies:
+  Enabled: false
+
+RSpec/InstanceVariable:
+  Enabled: false
+
+RSpec/AnyInstance:
+  Enabled: false
+
+RSpec/ContextWording:
+  Enabled: false

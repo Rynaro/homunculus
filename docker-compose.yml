@@ -1,0 +1,86 @@
+services:
+  homunculus-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: homunculus-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - RUBY_YJIT_ENABLE=1
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    volumes:
+      - ./workspace:/app/workspace
+      - homunculus-data:/app/data
+    networks:
+      - homunculus-net
+      - telegram-egress
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:18789:18789"
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp:size=100M
+
+  # Optional: Ollama running as a Docker service.
+  # Start with: docker compose --profile ollama up -d
+  # REQUIRED: Add OLLAMA_BASE_URL=http://ollama:11434 to .env — without it,
+  # Homunculus will timeout trying to reach Ollama via host.docker.internal.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: homunculus-ollama
+    profiles:
+      - ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - homunculus-net
+      - ollama-egress
+    ports:
+      - "127.0.0.1:11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  homunculus-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    container_name: homunculus-sandbox
+    profiles:
+      - sandbox
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M,noexec
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    cpus: 1.0
+    volumes:
+      - ./workspace:/workspace:ro
+
+networks:
+  homunculus-net:
+    driver: bridge
+    internal: true  # No external access
+  telegram-egress:
+    driver: bridge  # Allows outbound to Telegram API
+  ollama-egress:
+    driver: bridge  # Allows Ollama to pull models from registry.ollama.ai
+
+volumes:
+  homunculus-data:
+    driver: local
+  ollama-data:
+    driver: local

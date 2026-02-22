@@ -1,0 +1,16 @@
+FROM ruby:4.0-slim
+
+ENV RUBY_YJIT_ENABLE=1
+ENV LANG=C.UTF-8
+ENV BUNDLE_PATH=/usr/local/bundle
+ENV GEM_HOME=/usr/local/bundle
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libsqlite3-dev libffi-dev libyaml-dev git curl procps \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Gemfile ./
+RUN bundle install --jobs 4 --retry 3 && bundle lock --print > Gemfile.lock
+
+CMD ["bash"]

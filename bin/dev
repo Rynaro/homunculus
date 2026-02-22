@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+
+# ---- Docker Compose helpers ----
+
+dc() {
+  docker compose -f docker-compose.dev.yml "$@"
+}
+
+run_in_app() {
+  dc run --rm \
+    -e BUNDLE_PATH=/usr/local/bundle \
+    -e GEM_HOME=/usr/local/bundle \
+    app "$@"
+}
+
+# ---- Commands ----
+
+cmd_up() {
+  mkdir -p data workspace/memory
+  dc up -d "$@"
+  info "Dev services started."
+}
+
+cmd_down() {
+  dc down "$@"
+}
+
+cmd_build() {
+  dc build "$@"
+}
+
+cmd_test() {
+  run_in_app bundle exec rspec "$@"
+}
+
+cmd_lint() {
+  run_in_app bundle exec rubocop "$@"
+}
+
+cmd_console() {
+  run_in_app bundle exec ruby bin/console
+}
+
+cmd_validate() {
+  run_in_app bundle exec ruby bin/homunculus validate
+}
+
+cmd_shell() {
+  run_in_app bash
+}
+
+cmd_logs() {
+  dc logs -f "$@"
+}
+
+cmd_run() {
+  run_in_app "$@"
+}
+
+cmd_help() {
+  cat <<EOF
+Usage: bin/dev <command> [args]
+
+Commands:
+  build [args]       Build dev images
+  up [args]          Start dev services in background
+  down [args]        Stop dev services
+  test [args]        Run full test suite (or specific file/example)
+  lint [args]        Run RuboCop (pass -A to auto-fix)
+  console            Open IRB console
+  validate           Validate config
+  shell              Open a bash shell in the app container
+  logs [svc]         Tail logs (optionally for a specific service)
+  run <cmd>          Run an arbitrary command in the app container
+  help               Show this help
+
+Examples:
+  bin/dev build
+  bin/dev test
+  bin/dev test spec/agent/loop_spec.rb
+  bin/dev test spec/agent/loop_spec.rb:42
+  bin/dev lint
+  bin/dev lint -A
+  bin/dev validate
+  bin/dev run gem list
+EOF
+}
+
+# ---- Dispatch ----
+
+COMMAND="${1:-help}"
+shift || true
+
+case "$COMMAND" in
+  up)       cmd_up "$@" ;;
+  down)     cmd_down "$@" ;;
+  build)    cmd_build "$@" ;;
+  test)     cmd_test "$@" ;;
+  lint)     cmd_lint "$@" ;;
+  console)  cmd_console ;;
+  validate) cmd_validate ;;
+  shell)    cmd_shell ;;
+  logs)     cmd_logs "$@" ;;
+  run)      cmd_run "$@" ;;
+  help|--help|-h) cmd_help ;;
+  *)
+    error "Unknown command: $COMMAND. Run 'bin/dev help' for usage."
+    ;;
+esac

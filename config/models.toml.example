@@ -1,0 +1,123 @@
+# Model Fleet Configuration for Homunculus
+# ──────────────────────────────────────────────────────────────────────────────
+# Copy this file to config/models.toml and customise it for your setup.
+# This file is NOT tracked by git — your live config stays private.
+#
+# Defines model tiers, providers, escalation rules, and skill/keyword routing.
+# Model names and thresholds are configured here — not hardcoded in Ruby.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[defaults]
+provider = "ollama"                    # Default to local inference
+timeout_seconds = 120
+max_retries = 2
+escalation_enabled = true
+
+# ── Model Tiers ──────────────────────────────────────────────────────────────
+# Each tier maps to a specific model and inference profile.
+# Create custom Ollama Modelfiles (FROM base_model) to tune system prompts,
+# temperature, and context per use-case.
+
+[tiers.whisper]
+provider = "ollama"
+model = "homunculus-whisper"           # Custom Modelfile (e.g. FROM qwen3:4b)
+description = "Fast triage, classification, routing"
+max_tokens = 512
+temperature = 0.3
+context_window = 8192
+
+[tiers.workhorse]
+provider = "ollama"
+model = "homunculus-workhorse"         # Custom Modelfile (e.g. FROM qwen3:14b)
+description = "General daily tasks, skills, chat"
+max_tokens = 4096
+temperature = 0.7
+context_window = 16384
+
+[tiers.coder]
+provider = "ollama"
+model = "homunculus-coder"             # Custom Modelfile (e.g. FROM qwen2.5-coder:14b)
+description = "Code generation, review, debugging"
+max_tokens = 8192
+temperature = 0.2
+context_window = 32768
+
+[tiers.thinker]
+provider = "ollama"
+model = "homunculus-thinker"           # Custom Modelfile (e.g. FROM deepseek-r1:14b)
+description = "Deep reasoning, architecture, analysis"
+max_tokens = 8192
+temperature = 0.6
+context_window = 16384
+
+[tiers.cloud_fast]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+description = "Fast cloud fallback"
+max_tokens = 4096
+temperature = 0.7
+
+[tiers.cloud_standard]
+provider = "anthropic"
+model = "claude-sonnet-4-5-20250929"
+description = "Code + architecture escalation"
+max_tokens = 8192
+temperature = 0.7
+
+[tiers.cloud_deep]
+provider = "anthropic"
+model = "claude-opus-4-6"
+description = "Critical decisions, complex reasoning"
+max_tokens = 8192
+temperature = 0.7
+
+# ── Provider Settings ────────────────────────────────────────────────────────
+
+[providers.ollama]
+base_url = "http://127.0.0.1:11434"   # Override with OLLAMA_BASE_URL env var
+keep_alive = "30m"
+health_check_interval_seconds = 60
+
+[providers.anthropic]
+# API key comes from ENV["ANTHROPIC_API_KEY"] — NEVER put keys in config files
+max_tokens_default = 4096
+
+# ── Escalation Rules ────────────────────────────────────────────────────────
+
+[escalation]
+max_local_retries = 3                  # After N local failures, escalate to cloud
+quality_threshold = 0.3                # If quality score < threshold, escalate
+gibberish_detection = true             # Detect nonsensical responses
+cloud_budget_monthly_usd = 10.0        # Hard monthly budget cap in USD
+budget_alert_thresholds = [0.5, 0.8, 0.95]  # Alert at 50%, 80%, 95% of budget
+
+# ── Routing Configuration ────────────────────────────────────────────────────
+# Map your workspace skill names to model tiers.
+# Skills not listed here fall back to the workhorse tier.
+#
+# Add an entry for each skill defined in workspace/skills/<name>/SKILL.md.
+# Valid tier values: whisper | workhorse | coder | thinker
+
+[routing.skill_map]
+# Example skill → tier mappings. Replace with your own skills.
+home_monitor = "whisper"               # Lightweight sensor/status checks
+daily_journal = "workhorse"            # General writing and reflection
+code_review = "coder"                  # Code-heavy tasks
+deep_research = "thinker"             # Long-form reasoning and analysis
+git_workflow = "coder"                 # Git conventions and workflow
+
+# ── Keyword Signals ──────────────────────────────────────────────────────────
+# When no skill is matched, route based on keywords in the user message.
+# These are applied in order; the first match wins.
+
+[routing.keyword_signals]
+code = "coder"
+debug = "coder"
+refactor = "coder"
+ruby = "coder"
+python = "coder"
+docker = "coder"
+analyze = "thinker"
+architecture = "thinker"
+compare = "thinker"
+research = "thinker"

@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../config/boot"
+
+require "irb"
+
+puts "Homunculus v#{Homunculus::VERSION} — Interactive Console"
+puts "Config loaded. Available: Homunculus::Config, Homunculus::Agent, etc."
+puts ""
+
+# Pre-load config for convenience
+$config = Homunculus::Config.load
+puts "Config available as $config"
+
+IRB.start(__FILE__)
