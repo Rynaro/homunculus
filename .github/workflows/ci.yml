@@ -59,7 +59,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-ruby-${{ matrix.ruby }}
           path: coverage/
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rspec-results-ruby-${{ matrix.ruby }}
           path: tmp/rspec_results.json
