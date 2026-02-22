@@ -10,7 +10,7 @@ gem 'roda', '~> 3.85'
 
 # Configuration
 gem 'dotenv', '~> 3.1'
-gem 'toml-rb', '~> 3.0'
+gem 'toml-rb', '~> 4.1'
 
 # Type system & validation
 gem 'dry-struct', '~> 1.6'

@@ -165,7 +165,7 @@ GEM
       faraday-multipart (~> 1.0)
       zeitwerk (~> 2.6)
     thor (1.5.0)
-    toml-rb (3.0.1)
+    toml-rb (4.1.0)
       citrus (~> 3.0, > 3.0)
       racc (~> 1.7)
     tsort (0.2.0)
@@ -207,7 +207,7 @@ DEPENDENCIES
   simplecov (~> 0.22)
   sqlite3 (~> 2.5)
   telegram-bot-ruby (~> 2.0)
-  toml-rb (~> 3.0)
+  toml-rb (~> 4.1)
   webmock (~> 3.24)
 
 RUBY VERSION
