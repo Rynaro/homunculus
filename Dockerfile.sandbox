@@ -1,0 +1,22 @@
+FROM ruby:4.0-slim
+
+ENV LANG=C.UTF-8
+
+# Install only essential tools — no package manager retained
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl jq git ripgrep fd-find \
+    && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+# Disable shell history
+ENV HISTFILE=/dev/null
+ENV LESSHSTFILE=/dev/null
+
+# Use existing nobody user (UID 65534) — do not create a new user
+RUN mkdir -p /workspace && chown 65534:65534 /workspace
+
+USER 65534
+WORKDIR /workspace
+
+# No entrypoint — commands are passed explicitly
+CMD ["/bin/sh", "-c", "echo 'Sandbox ready'"]

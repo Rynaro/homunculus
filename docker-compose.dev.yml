@@ -1,0 +1,70 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      - RUBY_YJIT_ENABLE=1
+      - BUNDLE_PATH=/usr/local/bundle
+      - GEM_HOME=/usr/local/bundle
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - .:/app
+      - homunculus-dev-gems:/usr/local/bundle
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:18789:18789"
+    networks:
+      - homunculus-dev-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+
+  # Optional: Ollama running as a Docker service.
+  # Start with: docker compose -f docker-compose.dev.yml --profile ollama up -d
+  ollama:
+    image: ollama/ollama:latest
+    container_name: homunculus-dev-ollama
+    profiles:
+      - ollama
+    volumes:
+      - ollama-dev-data:/root/.ollama
+    networks:
+      - homunculus-dev-net
+    ports:
+      - "127.0.0.1:11434:11434"
+
+  # Optional: Sandbox service for tool execution testing.
+  # Start with: docker compose -f docker-compose.dev.yml --profile sandbox up -d
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    profiles:
+      - sandbox
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M,noexec
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    cpus: 1.0
+    volumes:
+      - ./workspace:/workspace:ro
+
+networks:
+  homunculus-dev-net:
+    driver: bridge
+    internal: true
+
+volumes:
+  homunculus-dev-gems:
+    driver: local
+  ollama-dev-data:
+    driver: local

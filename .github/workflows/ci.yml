@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUNDLE_JOBS: 4
+  BUNDLE_RETRY: 3
+  LOG_LEVEL: fatal
+
+jobs:
+  # ─── Lint ────────────────────────────────────────────────────────────
+  lint:
+    name: RuboCop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Run RuboCop
+        run: bundle exec rubocop --format github
+
+  # ─── Test ────────────────────────────────────────────────────────────
+  test:
+    name: RSpec (Ruby ${{ matrix.ruby }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.4"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      - name: Run RSpec
+        run: bundle exec rspec --format documentation --format json --out tmp/rspec_results.json
+
+      - name: Validate configuration
+        run: bundle exec ruby bin/homunculus validate
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-ruby-${{ matrix.ruby }}
+          path: coverage/
+          retention-days: 14
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rspec-results-ruby-${{ matrix.ruby }}
+          path: tmp/rspec_results.json
+          retention-days: 14
+
+  # ─── Security ────────────────────────────────────────────────────────
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Bundler Audit
+        run: bundle exec bundler-audit check --update
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── Docker Build ───────────────────────────────────────────────────
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'docker')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build main image
+        run: docker build -f Dockerfile -t homunculus:ci .
+
+      - name: Build sandbox image
+        run: docker build -f Dockerfile.sandbox -t homunculus-sandbox:ci .

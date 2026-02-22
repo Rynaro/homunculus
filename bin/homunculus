@@ -1,0 +1,279 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../config/boot"
+
+module Homunculus
+  module CLI
+    module_function
+
+    def run(args = ARGV)
+      command = args.shift || "serve"
+
+      case command
+      when "serve", "server"
+        start_server
+      when "cli", "chat"
+        start_cli(args)
+      when "tui"
+        start_tui(args)
+      when "telegram"
+        start_telegram(args)
+      when "memory"
+        memory_command(args)
+      when "version", "-v", "--version"
+        puts "Homunculus v#{VERSION}"
+      when "validate"
+        validate_config
+      when "help", "-h", "--help"
+        print_usage
+      else
+        warn "Unknown command: #{command}"
+        print_usage
+        exit 1
+      end
+    end
+
+    def start_server
+      config = Config.load
+      warn_ollama_docker_if_needed(config)
+      logger = SemanticLogger["Homunculus"]
+      logger.info("Starting Homunculus", version: VERSION)
+
+      Gateway::Server.start(config)
+    end
+
+    def start_cli(args = [])
+      config = Config.load
+      warn_ollama_docker_if_needed(config)
+
+      # Parse CLI flags
+      provider = nil
+      model = nil
+
+      while (arg = args.shift)
+        case arg
+        when "--provider"
+          provider = args.shift
+        when "--model"
+          model = args.shift
+        end
+      end
+
+      cli = Interfaces::CLI.new(
+        config:,
+        provider_name: provider,
+        model_override: model
+      )
+      cli.start
+    end
+
+    def start_tui(args = [])
+      # Redirect all logging to a file so SemanticLogger JSON lines don't corrupt
+      # the TUI's positioned ANSI rendering. Must happen before Config.load, which
+      # triggers the first logger calls.
+      log_path = File.expand_path("data/tui.log", Dir.pwd)
+      FileUtils.mkdir_p(File.dirname(log_path))
+      SemanticLogger.appenders.dup.each { |a| SemanticLogger.remove_appender(a) }
+      SemanticLogger.add_appender(file_name: log_path, formatter: :json)
+
+      config = Config.load
+      warn_ollama_docker_if_needed(config)
+
+      provider = nil
+      model    = nil
+
+      while (arg = args.shift)
+        case arg
+        when "--provider"
+          provider = args.shift
+        when "--model"
+          model = args.shift
+        end
+      end
+
+      tui = Interfaces::TUI.new(
+        config:,
+        provider_name: provider,
+        model_override: model
+      )
+      tui.start
+    end
+
+    def start_telegram(args = [])
+      config = Config.load
+      warn_ollama_docker_if_needed(config)
+
+      provider = nil
+      while (arg = args.shift)
+        case arg
+        when "--provider"
+          provider = args.shift
+        end
+      end
+
+      telegram = Interfaces::Telegram.new(
+        config:,
+        provider_name: provider
+      )
+      telegram.start
+    end
+
+    def validate_config
+      config = Config.load
+      warn_ollama_docker_if_needed(config)
+      config.gateway.validate!
+      puts "✓ Configuration valid"
+      puts "  Gateway: #{config.gateway.host}:#{config.gateway.port}"
+      puts "  Local model: #{config.models[:local]&.default_model}"
+      if config.escalation_enabled?
+        puts "  Escalation: enabled (#{config.models[:escalation]&.model})"
+      else
+        puts "  Escalation: disabled (local-only mode)"
+      end
+      puts "  Workspace: #{config.agent.workspace_path}"
+
+      ollama_url = config.models[:local]&.base_url
+      puts "  Ollama URL: #{ollama_url || "not set"}"
+
+      return unless ollama_url
+
+      require "httpx"
+      begin
+        response = HTTPX
+                   .with(timeout: { connect_timeout: 3, operation_timeout: 3 })
+                   .get("#{ollama_url}/api/tags")
+        if response.status == 200
+          puts "  Ollama: reachable"
+        else
+          puts "  Ollama: unreachable (HTTP #{response.status})"
+        end
+      rescue StandardError => e
+        puts "  Ollama: unreachable (#{e.message})"
+      end
+    end
+
+    def memory_command(args = [])
+      require "sequel"
+      require "fileutils"
+
+      subcommand = args.shift || "rebuild"
+      config = Config.load
+
+      case subcommand
+      when "rebuild"
+        with_embeddings = args.include?("--with-embeddings")
+        rebuild_memory_index(config, with_embeddings:)
+      when "status"
+        memory_status(config)
+      else
+        warn "Unknown memory subcommand: #{subcommand}"
+        warn "Usage: homunculus memory [rebuild|status] [--with-embeddings]"
+        exit 1
+      end
+    end
+
+    def rebuild_memory_index(config, with_embeddings: false)
+      db_path = config.memory.db_path
+      FileUtils.mkdir_p(File.dirname(db_path))
+      db = Sequel.sqlite(db_path)
+
+      embedder = nil
+      if with_embeddings
+        base_url = config.models[:local]&.base_url
+        if base_url
+          embedder = Memory::Embedder.new(
+            base_url:,
+            model: config.memory.embedding_model
+          )
+        end
+      end
+
+      store = Memory::Store.new(config:, db:, embedder:)
+
+      puts "Rebuilding memory index..."
+      count = store.rebuild_index!
+      puts "✓ Indexed #{count} chunks from workspace markdown files"
+
+      return unless with_embeddings && embedder
+
+      if embedder.available?
+        puts "Computing embeddings with #{config.memory.embedding_model}..."
+        store.compute_embeddings!
+        embed_count = db[:memory_embeddings].count
+        puts "✓ Computed #{embed_count} embeddings"
+      else
+        puts "⚠ Embedding model '#{config.memory.embedding_model}' not available in Ollama"
+        puts "  Pull it with: ollama pull #{config.memory.embedding_model}"
+      end
+    end
+
+    def memory_status(config)
+      db_path = config.memory.db_path
+      unless File.exist?(db_path)
+        puts "No memory database found at #{db_path}"
+        puts "Run 'homunculus memory rebuild' to create it."
+        return
+      end
+
+      db = Sequel.sqlite(db_path)
+      store = Memory::Store.new(config:, db:)
+
+      chunks = db[:memory_chunks].count
+      sources = db[:memory_chunks].distinct.select(:source).count
+      embeddings = db[:memory_embeddings].count
+
+      puts "Memory Status:"
+      puts "  Database:   #{db_path} (#{File.size(db_path)} bytes)"
+      puts "  Chunks:     #{chunks}"
+      puts "  Sources:    #{sources} files"
+      puts "  Embeddings: #{embeddings}"
+      puts "  Embedder:   #{store.embeddings_available? ? "available" : "not available"}"
+    end
+
+    def warn_ollama_docker_if_needed(config)
+      return unless File.exist?("/.dockerenv")
+      return if ENV.key?("OLLAMA_BASE_URL")
+      return unless config.models[:local]
+
+      warn <<~MSG
+        ⚠ Running in Docker: If Ollama is also in Docker (ollama profile), set
+          OLLAMA_BASE_URL=http://ollama:11434 in .env and restart.
+          The default host.docker.internal only works when Ollama runs on the host.
+      MSG
+    end
+
+    def print_usage
+      puts <<~USAGE
+        Usage: homunculus [command] [options]
+
+        Commands:
+          serve             Start the HTTP gateway (default)
+          cli               Start interactive CLI mode
+          tui               Start full-screen TUI mode
+          telegram          Start Telegram bot interface
+          memory rebuild    Re-index all markdown files into FTS5
+          memory status     Show memory system status
+          validate          Validate configuration
+          version           Show version
+          help              Show this message
+
+        CLI Options:
+          --provider NAME    Provider to use (ollama/anthropic)
+          --model MODEL      Override the default model
+
+        TUI Options:
+          --provider NAME    Provider to use (ollama/anthropic)
+          --model MODEL      Override the default model
+
+        Telegram Options:
+          --provider NAME    Default provider to use (ollama/anthropic)
+
+        Memory Options:
+          --with-embeddings  Also compute vector embeddings during rebuild
+      USAGE
+    end
+  end
+end
+
+Homunculus::CLI.run
