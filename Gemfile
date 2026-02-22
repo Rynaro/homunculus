@@ -5,7 +5,7 @@ source 'https://rubygems.org'
 ruby '>= 4.0'
 
 # Web framework
-gem 'puma', '~> 6.5'
+gem 'puma', '~> 7.2'
 gem 'roda', '~> 3.85'
 
 # Configuration
