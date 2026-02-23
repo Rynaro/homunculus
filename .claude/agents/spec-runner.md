@@ -23,22 +23,17 @@ You are a specialized RSpec runner for the Homunculus Ruby project.
 
 Single file:
 ```
-bundle exec rspec spec/path/to/file_spec.rb
+./bin/dev test spec/path/to/file_spec.rb
 ```
 
 Single example by line:
 ```
-bundle exec rspec spec/path/to/file_spec.rb:42
+./bin/dev test spec/path/to/file_spec.rb:42
 ```
 
 Full suite:
 ```
-bundle exec rspec
-```
-
-Full suite with documentation format:
-```
-bundle exec rspec --format documentation
+./bin/dev test
 ```
 
 ## Your behavior

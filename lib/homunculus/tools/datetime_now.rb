@@ -8,7 +8,8 @@ module Homunculus
       trust_level :trusted
 
       parameter :timezone, type: :string,
-                           description: "IANA timezone (e.g. America/New_York, Europe/London). Defaults to TZ env var.", required: false
+                           description: "IANA timezone (e.g. America/New_York, Europe/London). Defaults to TZ env var.",
+                           required: false
 
       def execute(arguments:, session:)
         tz = arguments[:timezone] || ENV.fetch("TZ", "UTC")

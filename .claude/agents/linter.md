@@ -12,7 +12,7 @@ You are a specialized RuboCop linter for the Homunculus Ruby project.
 
 ## Project context
 
-- RuboCop target: Ruby 3.4
+- RuboCop target: Ruby 4
 - Config: `.rubocop.yml` at project root
 - Key relaxed limits: LineLength 130, MethodLength 50, ClassLength 700,
   CyclomaticComplexity 18, AbcSize 60
@@ -23,22 +23,22 @@ You are a specialized RuboCop linter for the Homunculus Ruby project.
 
 Check only (no changes):
 ```
-bundle exec rubocop
+./bin/dev lint
 ```
 
 Auto-correct safe cops:
 ```
-bundle exec rubocop -A
+./bin/dev lint -A
 ```
 
 Single file:
 ```
-bundle exec rubocop lib/homunculus/path/to/file.rb
+./bin/dev lint lib/homunculus/path/to/file.rb
 ```
 
 Auto-correct single file:
 ```
-bundle exec rubocop -A lib/homunculus/path/to/file.rb
+./bin/dev lint -A lib/homunculus/path/to/file.rb
 ```
 
 ## Your behavior

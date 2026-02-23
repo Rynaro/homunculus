@@ -1,19 +1,41 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "tmpdir"
+require "fileutils"
 
 RSpec.describe Homunculus::Agent::PromptBuilder do
-  subject(:builder) do
-    described_class.new(workspace_path:, tool_registry:)
-  end
-
+  let(:workspace_dir) { Dir.mktmpdir("homunculus-prompt-spec-") }
   let(:tool_registry) { Homunculus::Tools::Registry.new }
-  let(:workspace_path) { "workspace" }
+
+  subject(:builder) do
+    described_class.new(workspace_path: workspace_dir, tool_registry:)
+  end
 
   before do
     tool_registry.register(Homunculus::Tools::Echo.new)
     tool_registry.register(Homunculus::Tools::DatetimeNow.new)
+
+    File.write(File.join(workspace_dir, "SOUL.md"), <<~MD)
+      # Soul
+
+      You are Homunculus, a personal AI agent.
+    MD
+
+    File.write(File.join(workspace_dir, "AGENTS.md"), <<~MD)
+      # Operating Instructions
+
+      Follow the APIVR-Delta methodology.
+    MD
+
+    File.write(File.join(workspace_dir, "USER.md"), <<~MD)
+      # User Profile
+
+      Name: Rynaro
+    MD
   end
+
+  after { FileUtils.rm_rf(workspace_dir) }
 
   describe "#build" do
     it "includes soul section from SOUL.md" do
@@ -64,7 +86,6 @@ RSpec.describe Homunculus::Agent::PromptBuilder do
     it "omits memory context when no memory store configured" do
       prompt = builder.build
 
-      # Without a memory store, the memory_context section should be absent
       expect(prompt).not_to include("<memory_context>")
     end
 
@@ -76,7 +97,7 @@ RSpec.describe Homunculus::Agent::PromptBuilder do
       session.add_message(role: :user, content: "What do I prefer?")
 
       builder_with_mem = described_class.new(
-        workspace_path:, tool_registry:, memory: mock_memory
+        workspace_path: workspace_dir, tool_registry:, memory: mock_memory
       )
       prompt = builder_with_mem.build(session:)
 
@@ -87,7 +108,6 @@ RSpec.describe Homunculus::Agent::PromptBuilder do
     it "uses XML-style delimiters" do
       prompt = builder.build
 
-      # Verify core sections are wrapped in XML tags (memory_context is optional)
       %w[soul operating_instructions user_context available_tools system_info].each do |section|
         expect(prompt).to include("<#{section}>")
         expect(prompt).to include("</#{section}>")
@@ -97,14 +117,13 @@ RSpec.describe Homunculus::Agent::PromptBuilder do
     it "omits sections for missing files" do
       builder_empty = described_class.new(
         workspace_path: "/nonexistent/path",
-        tool_registry: tool_registry
+        tool_registry:
       )
 
       prompt = builder_empty.build
 
       expect(prompt).not_to include("<soul>")
       expect(prompt).not_to include("<user_context>")
-      # Tool and system sections should still be present
       expect(prompt).to include("<available_tools>")
       expect(prompt).to include("<system_info>")
     end

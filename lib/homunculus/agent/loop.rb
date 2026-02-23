@@ -19,23 +19,29 @@ module Homunculus
       #   Loop.new(config:, providers:, router:, tools:, prompt_builder:, audit:)
       #
       # Models router + streaming (CLI):
-      #   Loop.new(config:, provider: nil, providers: nil, router: nil, models_router:, stream_callback: ->(chunk) { print chunk })
-      def initialize(config:, tools:, prompt_builder:, audit:, provider: nil, providers: nil, router: nil, models_router: nil,
-                     stream_callback: nil)
-        @config = config
-        @router = router
-        @models_router = models_router
-        @stream_callback = stream_callback
-        @tools = tools
+      #   Loop.new(config:, models_router:, stream_callback: ->(chunk) { print chunk }, tools:, prompt_builder:, audit:)
+      #
+      # Routing keyword args (passed via **routing):
+      #   provider:       Single ModelProvider instance (CLI / single-provider mode)
+      #   providers:      Hash of provider instances (multi-provider routing mode)
+      #   router:         Agent::Router for model selection (routing mode)
+      #   models_router:  Models::Router instance (CLI streaming mode)
+      #   stream_callback: Lambda receiving streamed text chunks (models_router mode)
+      def initialize(config:, tools:, prompt_builder:, audit:, **routing)
+        @config         = config
+        @router         = routing[:router]
+        @models_router  = routing[:models_router]
+        @stream_callback = routing[:stream_callback]
+        @tools          = tools
         @prompt_builder = prompt_builder
-        @audit = audit
+        @audit          = audit
 
         # Support both single-provider (backward compat) and multi-provider (routing) modes
-        if providers
-          @providers = providers
-        elsif provider
-          @providers = { ollama: provider }
-        elsif models_router
+        if routing[:providers]
+          @providers = routing[:providers]
+        elsif routing[:provider]
+          @providers = { ollama: routing[:provider] }
+        elsif routing[:models_router]
           @providers = {}
         else
           raise ArgumentError, "Either provider:, providers:, or models_router: must be given"
