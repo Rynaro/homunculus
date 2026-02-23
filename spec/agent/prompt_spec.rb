@@ -5,12 +5,12 @@ require "tmpdir"
 require "fileutils"
 
 RSpec.describe Homunculus::Agent::PromptBuilder do
-  let(:workspace_dir) { Dir.mktmpdir("homunculus-prompt-spec-") }
-  let(:tool_registry) { Homunculus::Tools::Registry.new }
-
   subject(:builder) do
     described_class.new(workspace_path: workspace_dir, tool_registry:)
   end
+
+  let(:workspace_dir) { Dir.mktmpdir("homunculus-prompt-spec-") }
+  let(:tool_registry) { Homunculus::Tools::Registry.new }
 
   before do
     tool_registry.register(Homunculus::Tools::Echo.new)
