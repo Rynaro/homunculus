@@ -28,6 +28,15 @@ max_turns = 25
 max_execution_time_seconds = 300
 workspace_path = "./workspace"
 
+[agent.context]
+system_prompt_pct = 0.30
+skills_pct = 0.10
+memory_pct = 0.15
+conversation_pct = 0.40
+reserve_pct = 0.05
+enable_windowing = true
+summarization_tier = "whisper"
+
 [tools]
 approval_mode = "elevated"  # off | elevated | always
 safe_commands = ["ls", "cat", "grep", "find", "wc", "head", "tail", "date", "echo", "pwd"]
@@ -68,6 +77,10 @@ max_context_tokens = 4096
 [security]
 audit_log_path = "./data/audit.jsonl"
 require_confirmation = ["shell_exec", "file_write", "send_message", "web_fetch", "web_extract", "mqtt_publish", "scheduler_manage"]
+
+[security.skill_validation]
+enabled = true
+block_threshold = "block"
 
 [security.content_pipeline]
 enabled = true

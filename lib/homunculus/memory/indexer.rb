@@ -269,7 +269,7 @@ module Homunculus
       end
 
       def estimate_tokens(text)
-        (text.length.to_f / CHARS_PER_TOKEN).ceil
+        Agent::Context::TokenCounter.estimate(text).ceil
       end
 
       def extract_overlap(text)

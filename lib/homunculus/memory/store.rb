@@ -100,24 +100,30 @@ module Homunculus
         end
       end
 
-      # Build memory context string for system prompt injection
+      # Build memory context string for system prompt injection.
+      # Allocates 25% of budget to MEMORY.md pinned summary, 75% to search results.
       def context_for_prompt(query, max_tokens: nil)
         max_tokens ||= @config.memory.max_context_tokens
         results = search(query, limit: 10)
         return nil if results.empty?
 
-        # Also include MEMORY.md header content if it exists
         memory_md = read_memory_md_summary
         parts = []
-        parts << memory_md if memory_md
 
-        results.each do |r|
-          source_label = Pathname.new(r.source).basename.to_s
-          parts << "- [#{source_label}] #{r.content.gsub("\n", " ").strip}"
+        if memory_md
+          pinned_budget = (max_tokens * 0.25).floor
+          parts << Agent::Context::TokenCounter.truncate_to_tokens(memory_md, pinned_budget)
         end
 
-        context = parts.join("\n")
-        truncate_to_tokens(context, max_tokens)
+        results_budget = memory_md ? (max_tokens * 0.75).floor : max_tokens
+        results_text = results.map do |r|
+          source_label = Pathname.new(r.source).basename.to_s
+          "- [#{source_label}] #{r.content.gsub("\n", " ").strip}"
+        end.join("\n")
+
+        parts << Agent::Context::TokenCounter.truncate_to_tokens(results_text, results_budget)
+
+        parts.join("\n")
       end
 
       # ── Index management ──────────────────────────────────────────────
@@ -285,13 +291,6 @@ module Homunculus
 
         # Return first 2000 chars as summary context
         content.length > 2000 ? content[0...2000] : content
-      end
-
-      def truncate_to_tokens(text, max_tokens)
-        max_chars = max_tokens * Indexer::CHARS_PER_TOKEN
-        return text if text.length <= max_chars
-
-        text[0...max_chars]
       end
     end
   end

@@ -49,7 +49,8 @@ module Homunculus
       end
 
       def run(user_message, session)
-        system_prompt = @prompt_builder.build(session:)
+        @context_budget = build_context_budget
+        system_prompt = @prompt_builder.build(session:, context_budget: @context_budget)
         session.add_message(role: :user, content: user_message)
 
         max_turns = @config.agent.max_turns
@@ -159,7 +160,8 @@ module Homunculus
 
       # Uses Models::Router (with optional streaming). Returns [response, provider_key].
       def complete_via_models_router(session, system_prompt)
-        messages_with_system = [{ role: "system", content: system_prompt }, *session.messages_for_api]
+        windowed = apply_context_window(session.messages_for_api)
+        messages_with_system = [{ role: "system", content: system_prompt }, *windowed]
         mr = @models_router.generate(
           messages: messages_with_system,
           tools: @tools.definitions,
@@ -212,8 +214,9 @@ module Homunculus
       end
 
       def attempt_completion(provider, session, system_prompt)
+        windowed = apply_context_window(session.messages_for_api)
         provider.complete(
-          messages: session.messages_for_api,
+          messages: windowed,
           tools: @tools.definitions,
           system: system_prompt,
           max_tokens: 4096,
@@ -330,7 +333,8 @@ module Homunculus
       # ── Continue & Tool Execution ─────────────────────────────────────
 
       def continue(session)
-        system_prompt = @prompt_builder.build(session:)
+        @context_budget ||= build_context_budget
+        system_prompt = @prompt_builder.build(session:, context_budget: @context_budget)
         remaining_turns = @config.agent.max_turns - session.turn_count
 
         remaining_turns.times do
@@ -343,6 +347,45 @@ module Homunculus
 
         AgentResult.error("Max turns (#{@config.agent.max_turns}) exceeded", session:)
       end
+
+      # ── Context Intelligence ─────────────────────────────────────────
+
+      # Build a context budget from the resolved model tier's context_window.
+      def build_context_budget
+        context_window = resolve_context_window
+        return nil unless context_window
+
+        Context::Budget.new(context_window:, config: @config.agent.context)
+      end
+
+      # Determine context_window from config. Prefers local model tier.
+      def resolve_context_window
+        @config.models[:local]&.context_window
+      end
+
+      # Apply sliding window to messages if budget and windowing are enabled.
+      def apply_context_window(messages)
+        return messages unless @context_budget
+        return messages unless @config.agent.context.enable_windowing
+
+        context_window.apply(messages)
+      end
+
+      def context_window
+        @context_window ||= Context::Window.new(
+          budget: @context_budget,
+          compressor: context_compressor
+        )
+      end
+
+      # Lazy-init compressor only when models_router exists.
+      def context_compressor
+        return nil unless @models_router
+
+        @context_compressor ||= Context::Compressor.new(models_router: @models_router)
+      end
+
+      # ── Tool Execution ─────────────────────────────────────────────────
 
       def execute_tool(tool_call, session, confirmed: false)
         start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
