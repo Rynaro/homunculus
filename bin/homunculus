@@ -25,6 +25,8 @@ module Homunculus
         puts "Homunculus v#{VERSION}"
       when "validate"
         validate_config
+      when "validate-skills"
+        validate_skills
       when "help", "-h", "--help"
         print_usage
       else
@@ -153,6 +155,36 @@ module Homunculus
       end
     end
 
+    def validate_skills
+      config = Config.load
+      skills_dir = File.join(config.agent.workspace_path, "skills")
+
+      threshold = config.security.skill_validation.block_threshold.to_sym
+      validator = Security::SkillValidator.new(block_threshold: threshold)
+      loader = Skills::Loader.new(skills_dir:, validator:)
+
+      results = loader.validate_all
+      if results.empty?
+        puts "No skills found in #{skills_dir}"
+        return
+      end
+
+      has_blocks = false
+      results.each do |name, findings|
+        if findings.empty?
+          puts "  \u2713 #{name}: clean"
+        else
+          findings.each do |f|
+            indicator = f.severity == :block ? "\u2717" : "\u26a0"
+            puts "  #{indicator} #{name}: [#{f.severity}] #{f.description} (line #{f.line_number})"
+            has_blocks = true if f.severity == :block
+          end
+        end
+      end
+
+      exit(1) if has_blocks
+    end
+
     def memory_command(args = [])
       require "sequel"
       require "fileutils"
@@ -255,6 +287,7 @@ module Homunculus
           memory rebuild    Re-index all markdown files into FTS5
           memory status     Show memory system status
           validate          Validate configuration
+          validate-skills   Scan skills for threat patterns
           version           Show version
           help              Show this message
 
