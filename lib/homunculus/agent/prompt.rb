@@ -23,8 +23,9 @@ module Homunculus
       # @param session [Session, nil] current session (for memory context and active agent)
       # @param agent_name [Symbol, nil] override agent (defaults to session.active_agent)
       # @param model_tier [Symbol, nil] active model tier (e.g., :workhorse, :coder)
+      # @param context_budget [Context::Budget, nil] token budget allocator
       # @return [String] complete system prompt
-      def build(session: nil, agent_name: nil, model_tier: nil)
+      def build(session: nil, agent_name: nil, model_tier: nil, context_budget: nil)
         target_agent = agent_name || session&.active_agent || :default
 
         sections = []
@@ -41,12 +42,12 @@ module Homunculus
         sections << xml_section("user_context", read_workspace("USER.md"))
         sections << xml_section("available_tools", @tools.definitions_for_prompt)
         sections << xml_section("system_info", system_info(model_tier:))
-        sections << xml_section("memory_context", memory_context(session))
+        sections << xml_section("memory_context", memory_context(session, context_budget:))
         sections << xml_section("content_safety", content_safety_instructions)
 
         # Inject matched skills into the prompt
         prompt = sections.compact.join("\n\n")
-        prompt = inject_skills(prompt, session)
+        prompt = inject_skills(prompt, session, context_budget:)
         log_workspace_context(prompt)
         prompt
       end
@@ -93,14 +94,15 @@ module Homunculus
         INFO
       end
 
-      def memory_context(session)
+      def memory_context(session, context_budget: nil)
         return nil unless @memory
 
         # Extract a query from the last user message in the session
         query = extract_query(session)
         return nil unless query
 
-        @memory.context_for_prompt(query)
+        max_tokens = context_budget&.tokens_for(:memory)
+        @memory.context_for_prompt(query, max_tokens:)
       rescue StandardError => e
         logger.warn("Memory context retrieval failed", error: e.message)
         nil
@@ -146,7 +148,7 @@ module Homunculus
       end
 
       # Match and inject skill context based on the last user message and enabled skills.
-      def inject_skills(prompt, session)
+      def inject_skills(prompt, session, context_budget: nil)
         return prompt unless @skill_loader
 
         query = extract_query(session)
@@ -158,7 +160,17 @@ module Homunculus
         all_enabled = enabled | auto_names.to_set
 
         matched = @skill_loader.match_skills(message: query, enabled_skills: all_enabled)
-        @skill_loader.inject_skill_context(skills: matched, system_prompt: prompt)
+        result = @skill_loader.inject_skill_context(skills: matched, system_prompt: prompt)
+
+        # Trim skill content to budget if available
+        if context_budget && matched.any?
+          skills_budget = context_budget.tokens_for(:skills)
+          skill_section = result.sub(prompt, "")
+          trimmed = Context::TokenCounter.truncate_to_tokens(skill_section, skills_budget)
+          result = "#{prompt}#{trimmed}"
+        end
+
+        result
       end
     end
   end

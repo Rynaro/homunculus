@@ -15,8 +15,11 @@ module Homunculus
     class Loader
       include SemanticLogger::Loggable
 
-      def initialize(skills_dir:)
+      # @param skills_dir [String, Pathname] path to workspace/skills/
+      # @param validator [Homunculus::Security::SkillValidator, nil] optional validator for threat scanning
+      def initialize(skills_dir:, validator: nil)
         @skills_dir = Pathname.new(skills_dir)
+        @validator = validator
         @skills = {}
         load_all if @skills_dir.exist?
       end
@@ -79,6 +82,26 @@ module Homunculus
         skill.tools_required.reject { |t| available.include?(t) }
       end
 
+      # Validate all skill files and return findings hash.
+      # @return [Hash{String => Array<Finding>}] skill name => findings
+      def validate_all
+        results = {}
+        return results unless @skills_dir.exist?
+
+        @skills_dir.children.select(&:directory?).each do |dir|
+          skill_file = dir / "SKILL.md"
+          next unless skill_file.exist?
+
+          skill = Skill.parse(skill_file)
+          _passed, findings = @validator.validate(skill) if @validator
+          results[skill.name] = findings || []
+        rescue StandardError => e
+          logger.warn("Failed to parse skill for validation", dir: dir.basename.to_s, error: e.message)
+        end
+
+        results
+      end
+
       # Reload all skills from disk.
       def reload!
         @skills.clear
@@ -94,6 +117,21 @@ module Homunculus
           next unless skill_file.exist?
 
           skill = Skill.parse(skill_file)
+
+          if @validator
+            passed, findings = @validator.validate(skill)
+            unless passed
+              logger.warn("Skill blocked by validation", name: skill.name,
+                                                         findings: findings.map(&:description))
+              next
+            end
+
+            if findings.any?
+              logger.info("Skill loaded with warnings", name: skill.name,
+                                                        warnings: findings.map(&:description))
+            end
+          end
+
           @skills[skill.name] = skill
           logger.debug("Skill loaded", name: skill.name, triggers: skill.triggers.size,
                                        auto_activate: skill.auto_activate)

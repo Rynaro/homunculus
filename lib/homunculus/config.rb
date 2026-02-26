@@ -36,12 +36,25 @@ module Homunculus
     attribute :timeout_seconds, Types::Coercible::Integer.optional.default(nil)
   end
 
+  class ContextConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :system_prompt_pct, Types::Strict::Float.default(0.30)
+    attribute :skills_pct, Types::Strict::Float.default(0.10)
+    attribute :memory_pct, Types::Strict::Float.default(0.15)
+    attribute :conversation_pct, Types::Strict::Float.default(0.40)
+    attribute :reserve_pct, Types::Strict::Float.default(0.05)
+    attribute :enable_windowing, Types::Strict::Bool.default(true)
+    attribute :summarization_tier, Types::Strict::String.default("whisper")
+  end
+
   class AgentConfig < Dry::Struct
     transform_keys(&:to_sym)
 
     attribute :max_turns, Types::Strict::Integer.default(25)
     attribute :max_execution_time_seconds, Types::Strict::Integer.default(300)
     attribute :workspace_path, Types::Strict::String.default("./workspace")
+    attribute :context, ContextConfig
   end
 
   class SandboxConfig < Dry::Struct
@@ -76,11 +89,19 @@ module Homunculus
     attribute :max_context_tokens, Types::Strict::Integer.default(4096)
   end
 
+  class SkillValidationConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :enabled, Types::Strict::Bool.default(true)
+    attribute :block_threshold, Types::Strict::String.default("block")
+  end
+
   class SecurityConfig < Dry::Struct
     transform_keys(&:to_sym)
 
     attribute :audit_log_path, Types::Strict::String.default("./data/audit.jsonl")
     attribute :require_confirmation, Types::Strict::Array.of(Types::Strict::String).default([].freeze)
+    attribute :skill_validation, SkillValidationConfig
   end
 
   class MQTTConfig < Dry::Struct
@@ -159,14 +180,12 @@ module Homunculus
       end
       @gateway = GatewayConfig.new(raw.fetch("gateway", {}))
       @models = build_models(raw.fetch("models", {}))
-      @agent = AgentConfig.new(raw.fetch("agent", {}))
+      @agent = build_agent(raw.fetch("agent", {}))
       tools_raw = raw.fetch("tools", {})
       mqtt_raw = tools_raw.fetch("mqtt", {})
       @tools = build_tools(tools_raw)
       @memory = MemoryConfig.new(raw.fetch("memory", {}))
-      security_raw = raw.fetch("security", {}).dup
-      security_raw.delete("content_pipeline") # Handled separately, not part of SecurityConfig struct
-      @security = SecurityConfig.new(security_raw)
+      @security = build_security(raw.fetch("security", {}))
       @telegram = TelegramConfig.new(raw.dig("interfaces", "telegram") || {})
       @mqtt = build_mqtt(mqtt_raw)
       @scheduler = build_scheduler(raw.fetch("scheduler", {}))
@@ -180,6 +199,22 @@ module Homunculus
       raw.each_with_object({}) do |(name, attrs), hash|
         hash[name.to_sym] = ModelConfig.new(attrs)
       end
+    end
+
+    def build_agent(raw)
+      context_raw = raw.delete("context") || {}
+      agent_hash = raw.transform_keys(&:to_sym)
+      agent_hash[:context] = ContextConfig.new(context_raw)
+      AgentConfig.new(agent_hash)
+    end
+
+    def build_security(raw)
+      raw = raw.dup
+      skill_validation_raw = raw.delete("skill_validation") || {}
+      raw.delete("content_pipeline") # Handled separately, not part of SecurityConfig struct
+      security_hash = raw.transform_keys(&:to_sym)
+      security_hash[:skill_validation] = SkillValidationConfig.new(skill_validation_raw)
+      SecurityConfig.new(security_hash)
     end
 
     def build_tools(raw)
