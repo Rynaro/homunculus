@@ -76,7 +76,7 @@ max_context_tokens = 4096
 
 [security]
 audit_log_path = "./data/audit.jsonl"
-require_confirmation = ["shell_exec", "file_write", "send_message", "web_fetch", "web_extract", "mqtt_publish", "scheduler_manage"]
+require_confirmation = ["shell_exec", "file_write", "send_message", "web_fetch", "web_extract", "mqtt_publish", "scheduler_manage", "memory_curate"]
 
 [security.skill_validation]
 enabled = true
