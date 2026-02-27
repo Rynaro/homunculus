@@ -40,6 +40,13 @@ module Homunculus
 
         sections << xml_section("operating_instructions", read_workspace("AGENTS.md"))
         sections << xml_section("user_context", read_workspace("USER.md"))
+
+        # inject long-term memory only in private/CLI sessions
+        if private_session?(session) && @memory
+          ltm = @memory.long_term_memory_for_prompt
+          sections << xml_section("long_term_memory", ltm) if ltm
+        end
+
         sections << xml_section("available_tools", @tools.definitions_for_prompt)
         sections << xml_section("system_info", system_info(model_tier:))
         sections << xml_section("memory_context", memory_context(session, context_budget:))
@@ -145,6 +152,21 @@ module Homunculus
 
         defn = @agent_manager.agent_definition(agent_name)
         defn&.tools_config
+      end
+
+      def private_session?(session)
+        return true if session.nil?
+
+        case session.source
+        when :cli, :tui, nil
+          true
+        when :telegram_private
+          true
+        when :telegram_group, :telegram_supergroup, :telegram_channel
+          false
+        else
+          true
+        end
       end
 
       # Match and inject skill context based on the last user message and enabled skills.
