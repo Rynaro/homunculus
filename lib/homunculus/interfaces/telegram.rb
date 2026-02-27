@@ -3,11 +3,13 @@
 require "sequel"
 require "fileutils"
 require "telegram/bot"
+require_relative "telegram/memory_curation"
 
 module Homunculus
   module Interfaces
     class Telegram
       include SemanticLogger::Loggable
+      include MemoryCuration
 
       # Per-chat session entry
       SessionEntry = Struct.new(:session, :last_activity, keyword_init: true)
@@ -79,11 +81,12 @@ module Homunculus
         )
 
         # Build model providers
-        providers = {}
-        providers[:ollama] = Agent::ModelProvider.new(@config.models[:local]) if @config.models[:local]
+        @providers = {}
+        @providers[:ollama] = Agent::ModelProvider.new(@config.models[:local]) if @config.models[:local]
         if @config.escalation_enabled? && @config.models[:escalation]
-          providers[:anthropic] = Agent::ModelProvider.new(@config.models[:escalation])
+          @providers[:anthropic] = Agent::ModelProvider.new(@config.models[:escalation])
         end
+        providers = @providers
 
         # Budget tracker (uses data/ directory alongside other DBs)
         budget_limit = @config.models[:escalation]&.daily_budget_usd || 2.0
@@ -172,6 +175,7 @@ module Homunculus
           registry.register(Tools::MemorySearch.new(memory_store: @memory_store))
           registry.register(Tools::MemorySave.new(memory_store: @memory_store))
           registry.register(Tools::MemoryDailyLog.new(memory_store: @memory_store))
+          registry.register(Tools::MemoryCurate.new(memory_store: @memory_store))
         end
 
         registry
@@ -228,10 +232,12 @@ module Homunculus
         text = message.text&.strip
         return if text.nil? || text.empty?
 
+        chat_type = message.chat.type || "private"
+
         if text.start_with?("/")
-          handle_command(chat_id, text)
+          handle_command(chat_id, text, chat_type:)
         else
-          handle_chat(chat_id, text)
+          handle_chat(chat_id, text, chat_type:)
         end
       end
 
@@ -268,14 +274,14 @@ module Homunculus
 
       # ── Commands ────────────────────────────────────────────────────
 
-      def handle_command(chat_id, text)
+      def handle_command(chat_id, text, chat_type: "private")
         command, *args = text.split(/\s+/)
 
         case command.downcase
         when "/start"
           cmd_start(chat_id)
         when "/new"
-          cmd_new_session(chat_id)
+          cmd_new_session(chat_id, chat_type:)
         when "/memory"
           cmd_memory(chat_id, args.join(" "))
         when "/status"
@@ -340,7 +346,7 @@ module Homunculus
         MSG
       end
 
-      def cmd_new_session(chat_id)
+      def cmd_new_session(chat_id, chat_type: "private")
         entry = @sessions.delete(chat_id)
 
         if entry
@@ -349,6 +355,7 @@ module Homunculus
         end
 
         session = Session.new
+        session.source = chat_type_to_source(chat_type)
         @sessions[chat_id] = SessionEntry.new(session:, last_activity: Time.now)
 
         send_message(chat_id, "🆕 New session started.\nSession ID: `#{session.id}`")
@@ -631,8 +638,8 @@ module Homunculus
 
       # ── Chat Handling ───────────────────────────────────────────────
 
-      def handle_chat(chat_id, text)
-        entry = session_entry_for(chat_id)
+      def handle_chat(chat_id, text, chat_type: "private")
+        entry = session_entry_for(chat_id, chat_type:)
         session = entry.session
 
         if session.pending_tool_call
@@ -760,7 +767,7 @@ module Homunculus
 
       # ── Session Management ──────────────────────────────────────────
 
-      def session_entry_for(chat_id)
+      def session_entry_for(chat_id, chat_type: "private")
         entry = @sessions[chat_id]
 
         if entry && !session_expired?(entry)
@@ -776,6 +783,7 @@ module Homunculus
 
         # Create new session (forced_provider resets to nil = auto)
         session = Session.new
+        session.source = chat_type_to_source(chat_type)
         new_entry = SessionEntry.new(session:, last_activity: Time.now)
         @sessions[chat_id] = new_entry
         new_entry
@@ -875,6 +883,7 @@ module Homunculus
         return unless @memory_store && session.turn_count.positive?
 
         @memory_store.save_transcript(session)
+        auto_curate_memory(session)
       rescue StandardError => e
         logger.warn("Failed to save session transcript", error: e.message, session_id: session.id)
       end
