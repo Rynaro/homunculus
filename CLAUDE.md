@@ -58,7 +58,7 @@ User Input → Interface → Session → Agent Loop → Model Router → LLM Pro
 
 **`lib/homunculus/config.rb`** — Dry::Struct-based configuration. TOML source (`config/default.toml`) with environment variable overrides. Multiple nested domains: Gateway, Models, Agent, Tools, Memory, Security, MQTT, Scheduler.
 
-**`lib/homunculus/tools/`** — 17 pluggable tools (echo, datetime, workspace read/write/list, memory search/save/daily_log/curate, files, shell, web, mqtt, scheduler_manage). Elevated tools (shell, file_write, web_fetch, mqtt_publish, scheduler_manage, memory_curate) require user confirmation. Execution is sandboxed in an isolated Docker container.
+**`lib/homunculus/tools/`** — 18 pluggable tools (echo, datetime, workspace read/write/delete/list, memory search/save/daily_log/curate, files, shell, web, mqtt, scheduler_manage). Elevated tools (shell, file_write, web_fetch, mqtt_publish, scheduler_manage, memory_curate, workspace_delete) require user confirmation. Execution is sandboxed in an isolated Docker container.
 
 **`lib/homunculus/memory/`** — SQLite + FTS5 full-text search. Optional vector embeddings via Ollama (nomic-embed-text). Daily memory logs under `workspace/memory/`.
 

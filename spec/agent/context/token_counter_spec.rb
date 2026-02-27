@@ -36,6 +36,21 @@ RSpec.describe Homunculus::Agent::Context::TokenCounter do
     end
   end
 
+  describe "encoding safety" do
+    it "handles ASCII-8BIT encoded text in estimate without raising encoding errors" do
+      binary = "Hello, world! foo? bar.".b
+
+      expect { described_class.estimate(binary) }.not_to raise_error
+      expect(described_class.estimate(binary)).to be > 0
+    end
+
+    it "handles ASCII-8BIT encoded text in truncate_to_tokens without raising encoding errors" do
+      binary = ("word " * 50).strip.b
+
+      expect { described_class.truncate_to_tokens(binary, 20) }.not_to raise_error
+    end
+  end
+
   describe ".truncate_to_tokens" do
     it "returns empty string for nil text" do
       expect(described_class.truncate_to_tokens(nil, 100)).to eq("")

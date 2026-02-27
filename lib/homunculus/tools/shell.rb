@@ -142,6 +142,8 @@ module Homunculus
       def truncate_output(output)
         return "" if output.nil?
 
+        output = output.dup.force_encoding(Encoding::UTF_8).scrub if output.encoding == Encoding::BINARY
+
         if output.bytesize > MAX_OUTPUT_SIZE
           output[0...MAX_OUTPUT_SIZE] + "\n... (output truncated at #{MAX_OUTPUT_SIZE} bytes)"
         else
