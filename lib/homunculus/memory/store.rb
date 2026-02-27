@@ -86,6 +86,36 @@ module Homunculus
         logger.info("Saved long-term memory", key:)
       end
 
+      # Read a single section from MEMORY.md by heading key.
+      # Returns the section content (without the heading line), or nil if not found.
+      def read_section(key)
+        path = @workspace / "MEMORY.md"
+        return nil unless path.exist?
+
+        existing = path.read(encoding: "utf-8")
+        heading_pattern = /^## #{Regexp.escape(key)}\s*$/
+        lines = existing.lines
+        start_idx = lines.index { |l| l.match?(heading_pattern) }
+        return nil unless start_idx
+
+        end_idx = lines[(start_idx + 1)..].index { |l| l.match?(/^## /) }
+        end_idx = end_idx ? start_idx + 1 + end_idx : lines.length
+        lines[(start_idx + 1)...end_idx].join.strip
+      end
+
+      # Returns the full MEMORY.md content for direct prompt injection.
+      # Used for the <long_term_memory> section, separate from dynamic search results.
+      # Returns nil if the file does not exist or is empty.
+      def long_term_memory_for_prompt(max_chars: 8000)
+        path = @workspace / "MEMORY.md"
+        return nil unless path.exist?
+
+        content = path.read(encoding: "utf-8")
+        return nil if content.strip.empty?
+
+        content.length > max_chars ? content[0...max_chars] : content
+      end
+
       # ── Search ────────────────────────────────────────────────────────
 
       # Hybrid search: BM25 + optional vector similarity
