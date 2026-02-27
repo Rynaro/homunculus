@@ -71,6 +71,20 @@ module Homunculus
       end
     end
 
+    def replace_messages(new_messages)
+      @messages = new_messages.map do |m|
+        {
+          role: (m[:role] || m["role"]).to_sym,
+          content: m[:content] || m["content"],
+          tool_calls: m[:tool_calls],
+          tool_call_id: m[:tool_call_id],
+          tool_name: m[:tool_name],
+          timestamp: m[:timestamp] || Time.now
+        }.compact
+      end
+      @updated_at = Time.now
+    end
+
     def active? = @status == :active
     def duration = Time.now - @created_at
 

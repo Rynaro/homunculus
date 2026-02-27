@@ -36,6 +36,10 @@ conversation_pct = 0.40
 reserve_pct = 0.05
 enable_windowing = true
 summarization_tier = "whisper"
+compaction_enabled = true
+compaction_soft_threshold = 0.75
+compaction_reserve_floor = 500
+compaction_preserved_turns = 3
 
 [tools]
 approval_mode = "elevated"  # off | elevated | always
