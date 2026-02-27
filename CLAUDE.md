@@ -58,7 +58,7 @@ User Input → Interface → Session → Agent Loop → Model Router → LLM Pro
 
 **`lib/homunculus/config.rb`** — Dry::Struct-based configuration. TOML source (`config/default.toml`) with environment variable overrides. Multiple nested domains: Gateway, Models, Agent, Tools, Memory, Security, MQTT, Scheduler.
 
-**`lib/homunculus/tools/`** — 16 pluggable tools (echo, datetime, workspace read/write/list, memory search/save/daily_log, files, shell, web, mqtt, scheduler_manage). Elevated tools (shell, file_write, web_fetch, mqtt_publish, scheduler_manage) require user confirmation. Execution is sandboxed in an isolated Docker container.
+**`lib/homunculus/tools/`** — 18 pluggable tools (echo, datetime, workspace read/write/delete/list, memory search/save/daily_log/curate, files, shell, web, mqtt, scheduler_manage). Elevated tools (shell, file_write, web_fetch, mqtt_publish, scheduler_manage, memory_curate, workspace_delete) require user confirmation. Execution is sandboxed in an isolated Docker container.
 
 **`lib/homunculus/memory/`** — SQLite + FTS5 full-text search. Optional vector embeddings via Ollama (nomic-embed-text). Daily memory logs under `workspace/memory/`.
 
@@ -191,6 +191,14 @@ Do not proceed on any of the following without explicit user confirmation:
   `lib/homunculus/interfaces/telegram.rb`.
 - The HTTP gateway (`lib/homunculus/gateway/server.rb`) must remain bound to
   `127.0.0.1` only. Never suggest changing to `0.0.0.0`.
+
+### Long-Term Memory (MEMORY.md)
+
+- `workspace/MEMORY.md` is the curated long-term memory store. Modifications are permanent.
+- The `memory_curate` tool requires user confirmation before writing. Never disable this confirmation.
+- MEMORY.md is only loaded into context for private sessions (CLI, TUI, Telegram DMs). Never expose it in group contexts.
+- Do not commit `workspace/MEMORY.md` if it contains sensitive personal information — it is a runtime artifact.
+- Auto-curation at session close is best-effort: LLM errors during curation must never prevent normal shutdown.
 
 ## Prompt Injection Surface
 

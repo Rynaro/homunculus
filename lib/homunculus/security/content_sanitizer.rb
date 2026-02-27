@@ -41,6 +41,8 @@ module Homunculus
 
       def sanitize(content, source: "unknown")
         text = content.to_s
+        # Normalize binary strings (e.g. shell/Docker output) to valid UTF-8
+        text = text.dup.force_encoding(Encoding::UTF_8).scrub if text.encoding == Encoding::BINARY
 
         # 1. Strip prompt section XML tags
         text = strip_prompt_tags(text)
@@ -60,6 +62,7 @@ module Homunculus
       end
 
       def filter_injections(text)
+        text = text.dup.force_encoding(Encoding::UTF_8).scrub if text.encoding == Encoding::BINARY
         INJECTION_PATTERNS.each do |pattern|
           text = text.gsub(pattern) { |match| "[FILTERED: #{match.length} chars]" }
         end

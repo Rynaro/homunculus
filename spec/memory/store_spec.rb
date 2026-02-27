@@ -293,4 +293,84 @@ RSpec.describe Homunculus::Memory::Store do
       expect(results).not_to be_empty
     end
   end
+
+  describe "#read_section" do
+    before do
+      File.write(File.join(workspace_dir, "MEMORY.md"), <<~MD)
+        # Memory
+
+        ## About My Human
+        Director of Engineering.
+
+        ## Preferences
+        Prefers dark mode.
+
+        ## Projects
+        Project Homunculus.
+      MD
+    end
+
+    it "returns content for an existing section" do
+      result = store.read_section("Preferences")
+      expect(result).to eq("Prefers dark mode.")
+    end
+
+    it "returns content for first section" do
+      result = store.read_section("About My Human")
+      expect(result).to eq("Director of Engineering.")
+    end
+
+    it "returns content for last section" do
+      result = store.read_section("Projects")
+      expect(result).to eq("Project Homunculus.")
+    end
+
+    it "returns nil for a missing section" do
+      result = store.read_section("NonExistent Section")
+      expect(result).to be_nil
+    end
+
+    it "returns nil when MEMORY.md does not exist" do
+      FileUtils.rm_f(File.join(workspace_dir, "MEMORY.md"))
+      result = store.read_section("Preferences")
+      expect(result).to be_nil
+    end
+  end
+
+  describe "#long_term_memory_for_prompt" do
+    it "returns full MEMORY.md content when file exists" do
+      content = "# Memory\n\n## Facts\n\nSome facts here."
+      File.write(File.join(workspace_dir, "MEMORY.md"), content)
+
+      result = store.long_term_memory_for_prompt
+      expect(result).to eq(content)
+    end
+
+    it "returns nil when MEMORY.md does not exist" do
+      result = store.long_term_memory_for_prompt
+      expect(result).to be_nil
+    end
+
+    it "returns nil when MEMORY.md is empty" do
+      File.write(File.join(workspace_dir, "MEMORY.md"), "   \n  ")
+      result = store.long_term_memory_for_prompt
+      expect(result).to be_nil
+    end
+
+    it "truncates content to max_chars when content exceeds the limit" do
+      long_content = "x" * 9000
+      File.write(File.join(workspace_dir, "MEMORY.md"), long_content)
+
+      result = store.long_term_memory_for_prompt(max_chars: 8000)
+      expect(result.length).to eq(8000)
+    end
+
+    it "does not truncate when content is within max_chars" do
+      content = "# Memory\n\n## Short\n\nShort content."
+      File.write(File.join(workspace_dir, "MEMORY.md"), content)
+
+      result = store.long_term_memory_for_prompt(max_chars: 8000)
+      expect(result).to eq(content)
+    end
+  end
 end

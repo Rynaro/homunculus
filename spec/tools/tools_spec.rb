@@ -155,6 +155,87 @@ RSpec.describe "Starter tools" do
     end
   end
 
+  describe Homunculus::Tools::WorkspaceDelete do
+    subject(:tool) { described_class.new }
+
+    let(:workspace_dir) { Dir.mktmpdir("workspace_test") }
+
+    before do
+      allow(tool).to receive(:resolve_workspace).and_return(workspace_dir)
+    end
+
+    after { FileUtils.rm_rf(workspace_dir) }
+
+    it "has correct metadata" do
+      expect(tool.name).to eq("workspace_delete")
+      expect(tool.requires_confirmation).to be true
+      expect(tool.trust_level).to eq(:mixed)
+    end
+
+    it "deletes an existing file" do
+      File.write(File.join(workspace_dir, "to_delete.txt"), "bye")
+      result = tool.execute(arguments: { path: "to_delete.txt" }, session:)
+
+      expect(result.success).to be true
+      expect(result.output).to include("Deleted to_delete.txt")
+      expect(File.exist?(File.join(workspace_dir, "to_delete.txt"))).to be false
+    end
+
+    it "fails when file does not exist" do
+      result = tool.execute(arguments: { path: "ghost.txt" }, session:)
+
+      expect(result.success).to be false
+      expect(result.error).to include("File not found")
+    end
+
+    it "fails when path is missing" do
+      result = tool.execute(arguments: {}, session:)
+
+      expect(result.success).to be false
+      expect(result.error).to include("Missing required parameter")
+    end
+
+    it "refuses to delete a directory without recursive: true" do
+      FileUtils.mkdir_p(File.join(workspace_dir, "mydir"))
+      result = tool.execute(arguments: { path: "mydir" }, session:)
+
+      expect(result.success).to be false
+      expect(result.error).to include("recursive: true")
+    end
+
+    it "deletes a directory with recursive: true" do
+      dir = File.join(workspace_dir, "mydir")
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "child.txt"), "x")
+
+      result = tool.execute(arguments: { path: "mydir", recursive: true }, session:)
+
+      expect(result.success).to be true
+      expect(Dir.exist?(dir)).to be false
+    end
+
+    it "rejects path traversal attacks" do
+      result = tool.execute(arguments: { path: "../../../etc/passwd" }, session:)
+
+      expect(result.success).to be false
+      expect(result.error).to include("Access denied")
+    end
+
+    it "rejects absolute paths outside workspace" do
+      result = tool.execute(arguments: { path: "/etc/passwd" }, session:)
+
+      expect(result.success).to be false
+      expect(result.error).to include("Access denied")
+    end
+
+    it "rejects an attempt to delete the workspace root itself" do
+      result = tool.execute(arguments: { path: ".", recursive: true }, session:)
+
+      expect(result.success).to be false
+      expect(result.error).to include("Access denied")
+    end
+  end
+
   describe Homunculus::Tools::WorkspaceList do
     subject(:tool) { described_class.new }
 

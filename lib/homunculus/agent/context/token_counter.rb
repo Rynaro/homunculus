@@ -13,7 +13,7 @@ module Homunculus
       module TokenCounter
         module_function
 
-        PUNCTUATION_PATTERN = /[.,!?;:'"()\[\]{}—–-]/
+        PUNCTUATION_PATTERN = /[.,!?;:'"()\[\]{}-]/
 
         # Returns 0 for nil or empty text.
         #
