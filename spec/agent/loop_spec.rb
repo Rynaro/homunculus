@@ -248,4 +248,82 @@ RSpec.describe Homunculus::Agent::Loop do
       expect(tool_msg[:content]).to include("denied")
     end
   end
+
+  describe "compaction integration" do
+    def make_models_response(content)
+      double(
+        content: content,
+        tool_calls: nil,
+        usage: { prompt_tokens: 100, completion_tokens: 50 },
+        model: "test-model",
+        finish_reason: "stop",
+        provider: :ollama
+      )
+    end
+
+    let(:models_router) { instance_double(Homunculus::Agent::Models::Router) }
+
+    let(:loop_with_router) do
+      described_class.new(
+        config:,
+        models_router:,
+        tools: tool_registry,
+        prompt_builder:,
+        audit:
+      )
+    end
+
+    context "when messages exceed compaction threshold" do
+      it "triggers compaction and replaces session messages" do
+        # Fill session with enough messages to exceed the conversation budget threshold
+        # context_window=32768, conversation_pct=0.40 → 13107 tokens
+        # threshold at 0.75 → ~9830 tokens
+        40.times do |i|
+          session.add_message(role: :user, content: "Question #{i} #{"detailed padding content " * 40}")
+          session.add_message(role: :assistant, content: "Answer #{i} #{"detailed padding content " * 40}")
+        end
+
+        original_count = session.messages.size
+        allow(models_router).to receive(:generate).and_return(make_models_response("Here is your answer."))
+
+        result = loop_with_router.run("New question", session)
+
+        expect(result.status).to eq(:completed)
+        # After compaction, messages should be fewer than original + new messages
+        expect(session.messages.size).to be < original_count
+      end
+    end
+
+    context "when messages are under compaction threshold" do
+      it "does not trigger compaction" do
+        allow(models_router).to receive(:generate).and_return(make_models_response("Here is your answer."))
+
+        result = loop_with_router.run("Hello", session)
+
+        expect(result.status).to eq(:completed)
+        # Should have exactly user + assistant messages
+        expect(session.messages.size).to eq(2)
+      end
+    end
+
+    context "when compaction is disabled in single-provider mode" do
+      it "does not trigger compaction" do
+        # Single-provider mode (no models_router) — compactor is nil
+        20.times do |i|
+          session.add_message(role: :user, content: "Question #{i} #{"padding " * 30}")
+          session.add_message(role: :assistant, content: "Answer #{i} #{"padding " * 30}")
+        end
+
+        allow(provider).to receive(:complete).and_return(
+          make_response(content: "Answer")
+        )
+
+        original_count = session.messages.size
+        loop_instance.run("New question", session)
+
+        # Messages should only grow (user + assistant added), not shrink
+        expect(session.messages.size).to eq(original_count + 2)
+      end
+    end
+  end
 end

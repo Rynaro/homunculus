@@ -46,6 +46,10 @@ module Homunculus
     attribute :reserve_pct, Types::Strict::Float.default(0.05)
     attribute :enable_windowing, Types::Strict::Bool.default(true)
     attribute :summarization_tier, Types::Strict::String.default("whisper")
+    attribute :compaction_enabled, Types::Strict::Bool.default(true)
+    attribute :compaction_soft_threshold, Types::Strict::Float.default(0.75)
+    attribute :compaction_reserve_floor, Types::Strict::Integer.default(500)
+    attribute :compaction_preserved_turns, Types::Strict::Integer.default(3)
   end
 
   class AgentConfig < Dry::Struct

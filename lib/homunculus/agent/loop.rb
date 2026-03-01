@@ -55,8 +55,13 @@ module Homunculus
 
         max_turns = @config.agent.max_turns
 
+        consumed_turns = 0
         max_turns.times do |turn|
-          logger.info("Agent turn", turn: turn + 1, max: max_turns, session_id: session.id)
+          break if turn + consumed_turns >= max_turns
+
+          consumed_turns += maybe_compact(session, system_prompt)
+
+          logger.info("Agent turn", turn: turn + consumed_turns + 1, max: max_turns, session_id: session.id)
 
           start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           response, provider_used = complete_with_routing(session, system_prompt)
@@ -337,7 +342,12 @@ module Homunculus
         system_prompt = @prompt_builder.build(session:, context_budget: @context_budget)
         remaining_turns = @config.agent.max_turns - session.turn_count
 
-        remaining_turns.times do
+        consumed_turns = 0
+        remaining_turns.times do |turn|
+          break if turn + consumed_turns >= remaining_turns
+
+          consumed_turns += maybe_compact(session, system_prompt)
+
           response, _provider = complete_with_routing(session, system_prompt)
           session.track_usage(response.usage)
 
@@ -376,6 +386,60 @@ module Homunculus
           budget: @context_budget,
           compressor: context_compressor
         )
+      end
+
+      # Lazy-init compactor only when models_router exists (needs compressor for summarization).
+      def context_compactor
+        return nil unless @models_router
+        return nil unless @context_budget
+
+        @context_compactor ||= Context::Compactor.new(
+          config: @config.agent.context,
+          budget: @context_budget,
+          compressor: context_compressor || Context::Compressor.new
+        )
+      end
+
+      # Run proactive compaction if conversation is approaching context limits.
+      # Returns the number of turns consumed (0 or 1).
+      def maybe_compact(session, system_prompt)
+        compactor = context_compactor
+        return 0 unless compactor
+        return 0 unless compactor.needs_compaction?(session.messages_for_api)
+
+        logger.info("Compaction triggered — injecting flush turn", session_id: session.id)
+
+        # Inject flush message and run one LLM turn
+        flush_msg = compactor.flush_message
+        session.add_message(role: flush_msg[:role], content: flush_msg[:content])
+
+        response, _provider = complete_with_routing(session, system_prompt)
+        session.track_usage(response.usage)
+        session.add_message(role: :assistant, content: response.content, tool_calls: response.tool_calls)
+
+        # Execute only trusted (non-confirmation-required) tool calls from the flush turn
+        if response.tool_calls&.any?
+          response.tool_calls.each do |tool_call|
+            next if @tools.requires_confirmation?(tool_call.name)
+
+            result = execute_tool(tool_call, session)
+            session.add_tool_result(tool_call:, result:,
+                                    trust_level: @tools.trust_level(tool_call.name))
+          end
+        end
+
+        # Compact the conversation
+        compacted = compactor.compact(session.messages_for_api)
+        session.replace_messages(compacted)
+
+        @audit.log(
+          action: "context_compaction",
+          session_id: session.id,
+          messages_before: session.messages.size,
+          messages_after: compacted.size
+        )
+
+        1 # consumed one turn
       end
 
       # Lazy-init compressor only when models_router exists.
