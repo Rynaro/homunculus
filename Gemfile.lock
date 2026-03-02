@@ -149,7 +149,7 @@ GEM
       fugit (~> 1.1, >= 1.11.1)
     semantic_logger (4.17.0)
       concurrent-ruby (~> 1.0)
-    sequel (5.101.0)
+    sequel (5.102.0)
       bigdecimal
     simplecov (0.22.0)
       docile (~> 1.1)
@@ -203,7 +203,7 @@ DEPENDENCIES
   rubocop-rspec (~> 3.3)
   rufus-scheduler (~> 3.9)
   semantic_logger (~> 4.16)
-  sequel (~> 5.86)
+  sequel (~> 5.102)
   simplecov (~> 0.22)
   sqlite3 (~> 2.5)
   telegram-bot-ruby (~> 2.0)
