@@ -49,7 +49,7 @@ group :development, :test do
   gem 'debug', '~> 1.10'
   gem 'rack-test', '~> 2.2'
   gem 'rspec', '~> 3.13'
-  gem 'rubocop', '~> 1.69'
+  gem 'rubocop', '~> 1.85'
   gem 'rubocop-rspec', '~> 3.3'
   gem 'simplecov', '~> 0.22', require: false
   gem 'webmock', '~> 3.24'
