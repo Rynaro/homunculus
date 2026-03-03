@@ -114,3 +114,13 @@ allowed_user_ids = []  # Your Telegram user ID(s) — REQUIRED for security
 session_timeout_minutes = 30
 max_message_length = 4096
 typing_indicator = true
+
+[sag]
+enabled = false
+searxng_url = "http://localhost:8888"
+searxng_categories = ["general"]
+top_n_results = 5
+deep_fetch = false
+reranking_strategy = "embedding"  # embedding | positional
+max_tokens = 1024
+searxng_timeout = 15
