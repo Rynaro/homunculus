@@ -41,6 +41,11 @@ module Homunculus
 
           elapsed = monotonic_ms - start_time
 
+          if http_response.status == 404
+            raise Models::PermanentProviderError,
+                  "Ollama model not found: #{model} (HTTP 404). Ensure the model is pulled: ollama pull #{model}"
+          end
+
           raise ProviderError, "Ollama returned #{http_response.status}: #{http_response.body}" unless http_response.status == 200
 
           parsed = JSON.parse(http_response.body.to_s)
@@ -95,6 +100,10 @@ module Homunculus
               final_data = chunk if chunk["done"]
             end
           rescue HTTPX::Error => e
+            if e.message.match?(/404|not found/i)
+              raise Models::PermanentProviderError,
+                    "Ollama model not found: #{model}. Ensure the model is pulled: ollama pull #{model}"
+            end
             raise ProviderError, "Ollama stream error: #{e.message}"
           end
 

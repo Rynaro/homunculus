@@ -91,7 +91,7 @@ module Homunculus
           models_toml["tiers"]["workhorse"] ||= {}
           models_toml["tiers"]["workhorse"] = models_toml["tiers"]["workhorse"].merge("model" => default_model)
         end
-        models_router = Agent::Models::Router.new(config: models_toml, providers: { ollama: ollama_provider })
+        @models_router = Agent::Models::Router.new(config: models_toml, providers: { ollama: ollama_provider })
         stream_callback = lambda { |chunk|
           if @streaming_first_chunk
             print "\n#{colorize("Homunculus:", :green)} "
@@ -101,7 +101,7 @@ module Homunculus
         }
         Agent::Loop.new(
           config: @config,
-          models_router: models_router,
+          models_router: @models_router,
           stream_callback: stream_callback,
           tools: @tool_registry,
           prompt_builder: @prompt_builder,
@@ -187,14 +187,25 @@ module Homunculus
       end
 
       def build_sag_llm
-        provider = @provider || Agent::ModelProvider.new(@config.models[:local])
         lambda { |prompt, max_tokens: 1024|
-          response = provider.complete(
-            messages: [{ role: "user", content: prompt }],
-            system: "You are a research assistant.",
-            max_tokens: max_tokens,
-            temperature: 0.2
-          )
+          if @models_router
+            response = @models_router.generate(
+              messages: [
+                { role: "system", content: "You are a research assistant." },
+                { role: "user", content: prompt }
+              ],
+              tier: :workhorse,
+              stream: false
+            )
+          else
+            provider = @provider || Agent::ModelProvider.new(@config.models[:local])
+            response = provider.complete(
+              messages: [{ role: "user", content: prompt }],
+              system: "You are a research assistant.",
+              max_tokens: max_tokens,
+              temperature: 0.2
+            )
+          end
           response.content.to_s
         }
       end

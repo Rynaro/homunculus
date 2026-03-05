@@ -37,15 +37,32 @@ module Homunculus
         end
 
         def build_sag_llm
-          provider = @providers[:ollama] || @providers.values.first
+          providers = @providers
           lambda { |prompt, max_tokens: 1024|
-            response = provider.complete(
-              messages: [{ role: "user", content: prompt }],
-              system: "You are a research assistant.",
-              max_tokens: max_tokens,
-              temperature: 0.2
-            )
-            response.content.to_s
+            last_error = nil
+
+            %i[ollama anthropic].each do |provider_key|
+              provider = providers[provider_key]
+              next unless provider
+
+              begin
+                response = provider.complete(
+                  messages: [{ role: "user", content: prompt }],
+                  system: "You are a research assistant.",
+                  max_tokens: max_tokens,
+                  temperature: 0.2
+                )
+                return response.content.to_s
+              rescue StandardError => e
+                last_error = e
+                SemanticLogger["SAGResearch"].warn(
+                  "SAG LLM call failed, trying next provider",
+                  provider: provider_key, error: e.message
+                )
+              end
+            end
+
+            raise last_error || RuntimeError.new("No LLM providers available for SAG pipeline")
           }
         end
       end
