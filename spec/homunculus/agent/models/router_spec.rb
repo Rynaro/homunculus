@@ -326,6 +326,40 @@ RSpec.describe Homunculus::Agent::Models::Router do
       end
     end
 
+    context "permanent error: model not found skips retries" do
+      it "escalates immediately on PermanentProviderError without retrying" do
+        allow(mock_ollama).to receive(:generate)
+          .and_raise(Homunculus::Agent::Models::PermanentProviderError, "model not found: homunculus-thinker")
+        stub_anthropic_generate
+
+        response = router.generate(messages: messages, tier: :thinker)
+
+        expect(response.provider).to eq(:anthropic)
+        expect(response.cloud?).to be true
+        expect(response.escalated?).to be true
+        expect(mock_ollama).to have_received(:generate).once
+      end
+
+      it "raises immediately when escalation is disabled" do
+        no_escalation_config = models_config.dup
+        no_escalation_config["defaults"] = models_config["defaults"].merge("escalation_enabled" => false)
+        local_only_router = described_class.new(
+          config: no_escalation_config,
+          providers: { ollama: mock_ollama },
+          usage_tracker: tracker
+        )
+
+        allow(mock_ollama).to receive(:generate)
+          .and_raise(Homunculus::Agent::Models::PermanentProviderError, "model not found")
+
+        expect do
+          local_only_router.generate(messages: messages)
+        end.to raise_error(Homunculus::Agent::Models::PermanentProviderError)
+
+        expect(mock_ollama).to have_received(:generate).once
+      end
+    end
+
     context "unknown tier" do
       it "raises ConfigError for unknown tier" do
         expect do

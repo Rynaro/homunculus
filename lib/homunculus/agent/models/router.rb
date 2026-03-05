@@ -109,6 +109,13 @@ module Homunculus
             @tracker&.record(response)
 
             return response
+          rescue PermanentProviderError => e
+            @logger.error("Permanent provider error — skipping retries", error: e.message, tier: resolved_tier)
+            if escalation_enabled?
+              @logger.warn("Escalating to cloud due to permanent error", from_tier: resolved_tier)
+              return escalate_to_cloud(messages:, tools:, from_tier: resolved_tier, stream:, &)
+            end
+            raise
           rescue ProviderError => e
             retries += 1
             @logger.error("Provider error", attempt: retries, max: max_retries, error: e.message)
@@ -252,6 +259,7 @@ module Homunculus
       # Error classes for the models module
       class ConfigError < StandardError; end
       class ProviderError < StandardError; end
+      class PermanentProviderError < ProviderError; end
     end
   end
 end

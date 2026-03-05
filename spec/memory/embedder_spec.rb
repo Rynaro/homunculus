@@ -73,6 +73,7 @@ RSpec.describe Homunculus::Memory::Embedder do
 
   describe "#available?" do
     it "returns false when Ollama is not reachable" do
+      stub_request(:get, "http://127.0.0.1:99999/api/tags").to_timeout
       embedder = described_class.new(base_url: "http://127.0.0.1:99999")
       expect(embedder.available?).to be false
     end
@@ -80,6 +81,7 @@ RSpec.describe Homunculus::Memory::Embedder do
 
   describe "#embed" do
     it "returns nil when Ollama is not reachable" do
+      stub_request(:post, "http://127.0.0.1:99999/api/embeddings").to_timeout
       embedder = described_class.new(base_url: "http://127.0.0.1:99999")
       expect(embedder.embed("test text")).to be_nil
     end

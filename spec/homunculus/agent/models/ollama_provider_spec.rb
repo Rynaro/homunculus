@@ -96,6 +96,18 @@ RSpec.describe Homunculus::Agent::Models::OllamaProvider do
       end.to raise_error(Homunculus::Agent::Models::ProviderError, /Ollama returned 500/)
     end
 
+    it "raises PermanentProviderError on 404 (model not found)" do
+      http_response = instance_double(HTTPX::Response, status: 404, body: '{"error":"model not found"}')
+      allow(http_response).to receive(:is_a?).with(HTTPX::ErrorResponse).and_return(false)
+      http_client = instance_double(HTTPX::Session)
+      allow(http_client).to receive(:post).and_return(http_response)
+      allow(HTTPX).to receive(:with).and_return(http_client)
+
+      expect do
+        provider.generate(messages: [{ role: "user", content: "Hi" }], model: "nonexistent-model")
+      end.to raise_error(Homunculus::Agent::Models::PermanentProviderError, /model not found.*nonexistent-model/i)
+    end
+
     it "includes num_ctx in options when context_window is provided" do
       captured_payload = nil
       http_response = instance_double(HTTPX::Response, status: 200,
