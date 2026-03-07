@@ -2,13 +2,11 @@
 
 require "sequel"
 require "fileutils"
-require_relative "concerns/sag_research"
 
 module Homunculus
   module Interfaces
     class CLI
       include SemanticLogger::Loggable
-      include Concerns::SAGResearch
 
       BANNER = <<~BANNER
         🧪 Homunculus v%<version>s — Personal AI Agent
@@ -93,7 +91,7 @@ module Homunculus
           models_toml["tiers"]["workhorse"] ||= {}
           models_toml["tiers"]["workhorse"] = models_toml["tiers"]["workhorse"].merge("model" => default_model)
         end
-        @models_router = Agent::Models::Router.new(config: models_toml, providers: { ollama: ollama_provider })
+        models_router = Agent::Models::Router.new(config: models_toml, providers: { ollama: ollama_provider })
         stream_callback = lambda { |chunk|
           if @streaming_first_chunk
             print "\n#{colorize("Homunculus:", :green)} "
@@ -103,7 +101,7 @@ module Homunculus
         }
         Agent::Loop.new(
           config: @config,
-          models_router: @models_router,
+          models_router: models_router,
           stream_callback: stream_callback,
           tools: @tool_registry,
           prompt_builder: @prompt_builder,
@@ -152,9 +150,6 @@ module Homunculus
           registry.register(Tools::MemoryDailyLog.new(memory_store: @memory_store))
           registry.register(Tools::MemoryCurate.new(memory_store: @memory_store))
         end
-
-        # Register SAG web research tool
-        registry.register(Tools::WebResearch.new(pipeline_factory: build_sag_pipeline_factory)) if @config.sag.enabled
 
         registry
       end

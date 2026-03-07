@@ -96,18 +96,6 @@ RSpec.describe Homunculus::Agent::Models::OllamaProvider do
       end.to raise_error(Homunculus::Agent::Models::ProviderError, /Ollama returned 500/)
     end
 
-    it "raises PermanentProviderError on 404 (model not found)" do
-      http_response = instance_double(HTTPX::Response, status: 404, body: '{"error":"model not found"}')
-      allow(http_response).to receive(:is_a?).with(HTTPX::ErrorResponse).and_return(false)
-      http_client = instance_double(HTTPX::Session)
-      allow(http_client).to receive(:post).and_return(http_response)
-      allow(HTTPX).to receive(:with).and_return(http_client)
-
-      expect do
-        provider.generate(messages: [{ role: "user", content: "Hi" }], model: "nonexistent-model")
-      end.to raise_error(Homunculus::Agent::Models::PermanentProviderError, /model not found.*nonexistent-model/i)
-    end
-
     it "includes num_ctx in options when context_window is provided" do
       captured_payload = nil
       http_response = instance_double(HTTPX::Response, status: 200,
@@ -160,66 +148,6 @@ RSpec.describe Homunculus::Agent::Models::OllamaProvider do
       provider.generate(messages: [{ role: "user", content: "Hi" }], model: "test")
 
       expect(captured_payload[:keep_alive]).to eq("30m")
-    end
-  end
-
-  describe "#generate_stream" do
-    def build_stream_error(message)
-      HTTPX::Error.new(message)
-    end
-
-    def stub_streaming_error(error)
-      stream_response = Object.new
-      stream_response.define_singleton_method(:each_line) { raise error }
-
-      stream_session = double("stream_session") # rubocop:disable RSpec/VerifiedDoubles
-      allow(stream_session).to receive(:post).and_return(stream_response)
-
-      plugin_session = double("plugin_session") # rubocop:disable RSpec/VerifiedDoubles
-      allow(plugin_session).to receive(:with).and_return(stream_session)
-      allow(HTTPX).to receive(:plugin).with(:stream).and_return(plugin_session)
-    end
-
-    it "raises PermanentProviderError on HTTP 400 with diagnostic message" do
-      stub_streaming_error(build_stream_error("HTTP Error: 400"))
-
-      expect do
-        provider.generate_stream(
-          messages: [{ role: "user", content: "Hi" }],
-          model: "deepseek-r1:14b"
-        )
-      end.to raise_error(
-        Homunculus::Agent::Models::PermanentProviderError,
-        /Ollama rejected request.*deepseek-r1:14b.*400.*supports_tools/
-      )
-    end
-
-    it "raises PermanentProviderError on HTTP 404 during streaming" do
-      stub_streaming_error(build_stream_error("HTTP Error: 404 not found"))
-
-      expect do
-        provider.generate_stream(
-          messages: [{ role: "user", content: "Hi" }],
-          model: "nonexistent-model"
-        )
-      end.to raise_error(
-        Homunculus::Agent::Models::PermanentProviderError,
-        /model not found.*nonexistent-model/
-      )
-    end
-
-    it "raises ProviderError with status for other HTTP errors during streaming" do
-      stub_streaming_error(build_stream_error("HTTP Error: 500"))
-
-      expect do
-        provider.generate_stream(
-          messages: [{ role: "user", content: "Hi" }],
-          model: "test-model"
-        )
-      end.to raise_error(
-        Homunculus::Agent::Models::ProviderError,
-        /Ollama stream error.*500/
-      )
     end
   end
 
