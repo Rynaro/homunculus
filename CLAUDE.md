@@ -4,38 +4,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+**Production:** Use `bin/assistant` for running the assistant (Docker Compose production stack). Handles pre-flight cleanup, lifecycle, recovery, and observability.
+
 ```bash
-# Dependencies
-bundle install
+bin/assistant setup                        # first-run: .env, build, optional Ollama pull
+bin/assistant up [--with-ollama] [--with-sandbox] [--build]  # start (pre-flight runs automatically)
+bin/assistant down                         # stop
+bin/assistant restart                      # down then up
+bin/assistant doctor                       # diagnostics: Docker, .env, containers, ports
+bin/assistant obliterate --confirm [--volumes]  # nuclear cleanup
+bin/assistant status                       # container states
+bin/assistant logs [service]               # tail logs
+bin/assistant validate                     # config validation in running container
+bin/assistant shell                        # bash in agent container
+bin/assistant cli [--provider NAME] [--model MODEL]  # interactive CLI in container
+bin/assistant tui [--provider NAME] [--model MODEL]  # full-screen TUI in container
+bin/assistant help                         # full command list
+```
+
+**Model management:** Use `bin/ollama` for Ollama model store (fleet from config, pull/remove). Docker-aware. Optional `config/ollama.env`: set `BIN_OLLAMA_USE_DOCKER=1` to run all commands via Docker (no host Ruby required; needs `bin/assistant up --with-ollama`).
+
+```bash
+bin/ollama [list]                           # fleet table (default)
+bin/ollama status                           # Ollama reachability + fleet summary
+bin/ollama pull <tier> | bin/ollama pull --all
+bin/ollama remove <tier>
+bin/ollama help
+```
+
+**Development:** Use `bin/dev` for all development commands (tests, lint, console, validate). Runs inside the dev container with the correct Ruby 4.0 environment.
+
+```bash
+# Build & environment
+bin/dev build                              # build dev images
+bin/dev up                                 # start dev services
+bin/dev down                               # stop dev services
 
 # Tests
-bundle exec rspec                          # all tests
-bundle exec rspec spec/agent/loop_spec.rb  # single file
-bundle exec rspec spec/agent/loop_spec.rb:42  # single example
+bin/dev test                               # all tests
+bin/dev test spec/agent/loop_spec.rb       # single file
+bin/dev test spec/agent/loop_spec.rb:42    # single example
 
 # Linting
-bundle exec rubocop                        # check
-bundle exec rubocop -A                     # auto-correct
+bin/dev lint                               # check
+bin/dev lint -A                            # auto-correct
 
 # Run
-bundle exec ruby bin/homunculus serve      # HTTP gateway
-bundle exec ruby bin/homunculus cli        # interactive terminal
-bundle exec ruby bin/homunculus validate   # validate config
-
-# Rake
-bundle exec rake                           # runs spec (default)
-bundle exec rake homunculus:validate_config
-
-# Docker dev environment
-bin/dev build              # build dev images
-bin/dev test               # run full test suite
-bin/dev test spec/path:42  # run single example
-bin/dev lint               # rubocop check
-bin/dev lint -A            # rubocop auto-fix
-bin/dev console            # IRB console
-bin/dev validate           # validate config
-bin/dev up                 # start dev services
-bin/dev down               # stop dev services
+bin/dev validate                           # validate config
+bin/dev console                            # IRB console
+bin/dev shell                              # bash shell in container
+bin/dev logs                               # tail service logs
+bin/dev run <cmd>                          # arbitrary command in container
 ```
 
 ## Architecture
@@ -97,22 +116,22 @@ Test env: `.env.test` sets `LOG_LEVEL=fatal` to suppress SemanticLogger output.
 
 ## Code Style
 
-RuboCop target: Ruby 3.4. Key limits: 130-char lines, 50-line methods, 700-line classes. rubocop-rspec plugin enabled. Run `bundle exec rubocop` before committing.
+RuboCop target: Ruby 4.0. Key limits: 130-char lines, 50-line methods, 700-line classes. rubocop-rspec plugin enabled. Run `bin/dev lint` before committing.
 
 ## Decision Procedures
 
 ### Test-Edit Cycle
 
 1. Read the failing spec before touching source — understand the assertion first.
-2. Run the specific file: `bundle exec rspec spec/path/to/file_spec.rb`
+2. Run the specific file: `bin/dev test spec/path/to/file_spec.rb`
 3. Fix source, re-run the same file.
-4. Run full suite only before committing: `bundle exec rspec`
+4. Run full suite only before committing: `bin/dev test`
 5. If SimpleCov reports below 75% overall or 30% per file, add specs.
    Coverage drops silently fail CI — check before pushing.
 
 ### When RuboCop Fails
 
-- Run `bundle exec rubocop -A` only for Style/Layout/Naming cops.
+- Run `bin/dev lint -A` only for Style/Layout/Naming cops.
 - Never auto-correct `Metrics/*` violations — those require real refactoring.
 - Check `.rubocop.yml` before adding inline `# rubocop:disable` comments;
   many cops are already relaxed at the config level (e.g., CyclomaticComplexity: 18).

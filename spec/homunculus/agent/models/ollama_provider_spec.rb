@@ -163,6 +163,66 @@ RSpec.describe Homunculus::Agent::Models::OllamaProvider do
     end
   end
 
+  describe "#generate_stream" do
+    def build_stream_error(message)
+      HTTPX::Error.new(message)
+    end
+
+    def stub_streaming_error(error)
+      stream_response = Object.new
+      stream_response.define_singleton_method(:each_line) { raise error }
+
+      stream_session = double("stream_session") # rubocop:disable RSpec/VerifiedDoubles
+      allow(stream_session).to receive(:post).and_return(stream_response)
+
+      plugin_session = double("plugin_session") # rubocop:disable RSpec/VerifiedDoubles
+      allow(plugin_session).to receive(:with).and_return(stream_session)
+      allow(HTTPX).to receive(:plugin).with(:stream).and_return(plugin_session)
+    end
+
+    it "raises PermanentProviderError on HTTP 400 with diagnostic message" do
+      stub_streaming_error(build_stream_error("HTTP Error: 400"))
+
+      expect do
+        provider.generate_stream(
+          messages: [{ role: "user", content: "Hi" }],
+          model: "deepseek-r1:14b"
+        )
+      end.to raise_error(
+        Homunculus::Agent::Models::PermanentProviderError,
+        /Ollama rejected request.*deepseek-r1:14b.*400.*supports_tools/
+      )
+    end
+
+    it "raises PermanentProviderError on HTTP 404 during streaming" do
+      stub_streaming_error(build_stream_error("HTTP Error: 404 not found"))
+
+      expect do
+        provider.generate_stream(
+          messages: [{ role: "user", content: "Hi" }],
+          model: "nonexistent-model"
+        )
+      end.to raise_error(
+        Homunculus::Agent::Models::PermanentProviderError,
+        /model not found.*nonexistent-model/
+      )
+    end
+
+    it "raises ProviderError with status for other HTTP errors during streaming" do
+      stub_streaming_error(build_stream_error("HTTP Error: 500"))
+
+      expect do
+        provider.generate_stream(
+          messages: [{ role: "user", content: "Hi" }],
+          model: "test-model"
+        )
+      end.to raise_error(
+        Homunculus::Agent::Models::ProviderError,
+        /Ollama stream error.*500/
+      )
+    end
+  end
+
   describe "#available?" do
     it "returns true when Ollama responds with 200" do
       http_response = instance_double(HTTPX::Response, status: 200, body: '{"models":[]}')

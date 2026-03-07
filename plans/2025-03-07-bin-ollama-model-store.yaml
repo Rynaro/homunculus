@@ -1,0 +1,122 @@
+metadata:
+  spec_id: "SPEC-2025-03-07-bin-ollama"
+  confidence: 88
+  complexity: 5
+  spectra_version: "4.1.0"
+
+projects:
+  - id: "P-1"
+    name: "Ollama Model Management CLI"
+    features:
+      - id: "F-1"
+        name: "Model Store Interface"
+        stories:
+          - id: "S-1"
+            title: "Model Fleet Discovery"
+            timebox: "1d"
+            risk: "P2"
+            action_plan:
+              - verb: "Create"
+                target: "bin/ollama with bash dispatch, color helpers (adapt from bin/assistant)"
+              - verb: "Create"
+                target: "Inline Ruby to parse config/models.toml + config/default.toml for Ollama tiers and embedding model, emit JSON"
+              - verb: "Create"
+                target: "cmd_list: call parser, GET /api/tags, cross-reference, display table (Tier, Model, Description, Status, Size)"
+              - verb: "Create"
+                target: "Ollama connectivity: host 127.0.0.1:11434, fallback docker exec homunculus-ollama"
+            acceptance_criteria:
+              - given: "Ollama running, some models installed"
+                when: "run bin/ollama list"
+                then: "table shows all fleet models with installation status"
+              - given: "Ollama not reachable"
+                when: "run bin/ollama list"
+                then: "clear error with remediation"
+              - given: "model installed but not in fleet"
+                when: "run bin/ollama list"
+                then: "not shown (fleet-only view)"
+            agent_hints:
+              recommended_class: "builder"
+              context_files: ["bin/assistant", "config/models.toml", "config/default.toml"]
+              validation_gates:
+                p0: "Ollama unreachable handled gracefully"
+                coverage: "manual smoke test"
+
+          - id: "S-4"
+            title: "Help & Status"
+            timebox: "0.5d"
+            risk: "P2"
+            action_plan:
+              - verb: "Create"
+                target: "cmd_help with grouped command reference"
+              - verb: "Create"
+                target: "cmd_status: Ollama reachability, fleet summary"
+              - verb: "Set"
+                target: "default (no args) = list view"
+            acceptance_criteria:
+              - given: "no args"
+                when: "run bin/ollama"
+                then: "show model list"
+              - given: "help"
+                when: "run bin/ollama help"
+                then: "show all commands"
+              - given: "status"
+                when: "run bin/ollama status"
+                then: "Ollama health + fleet summary"
+            agent_hints:
+              recommended_class: "builder"
+              context_files: ["bin/assistant"]
+
+          - id: "S-2"
+            title: "Model Installation (Pull)"
+            timebox: "1d"
+            risk: "P2"
+            action_plan:
+              - verb: "Create"
+                target: "cmd_pull <tier> and cmd_pull --all, progress passthrough"
+              - verb: "Implement"
+                target: "Docker-aware pull (exec into homunculus-ollama if needed)"
+            acceptance_criteria:
+              - given: "model not installed"
+                when: "run bin/ollama pull whisper"
+                then: "pulls that tier model with progress"
+              - given: "missing models"
+                when: "run bin/ollama pull --all"
+                then: "pulls all missing sequentially"
+              - given: "invalid tier"
+                when: "run bin/ollama pull nonexistent"
+                then: "error listing valid tiers"
+            agent_hints:
+              recommended_class: "builder"
+              context_files: ["bin/assistant"]
+
+          - id: "S-3"
+            title: "Model Removal"
+            timebox: "0.5d"
+            risk: "P2"
+            action_plan:
+              - verb: "Create"
+                target: "cmd_remove <tier> with confirmation (name + size)"
+              - verb: "Implement"
+                target: "Docker-aware removal"
+            acceptance_criteria:
+              - given: "model installed"
+                when: "run bin/ollama remove thinker"
+                then: "confirm then remove"
+              - given: "model not installed"
+                when: "run bin/ollama remove thinker"
+                then: "show 'not installed' message"
+            agent_hints:
+              recommended_class: "builder"
+
+execution_plan:
+  phases:
+    - name: "Discovery + UX"
+      stories: ["S-1", "S-4"]
+      agent_class: "builder"
+    - name: "Install/Remove"
+      stories: ["S-2", "S-3"]
+      agent_class: "builder"
+
+files_changed:
+  new: ["bin/ollama"]
+  edit: ["README.md", "CLAUDE.md"]

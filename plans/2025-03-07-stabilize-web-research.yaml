@@ -1,0 +1,218 @@
+metadata:
+  spec_id: "SPEC-2025-03-07-stabilize-web-research"
+  confidence: 92
+  complexity: 8
+  spectra_version: "4.2.0"
+
+projects:
+  - id: "P-1"
+    name: "Stabilize web_research Tool Triggers"
+    features:
+      - id: "F-1"
+        name: "Router Tool Compatibility"
+        stories:
+          - id: "S-1"
+            title: "Add tool compatibility flag to tier config"
+            timebox: "1d"
+            risk: "P0"
+            action_plan:
+              - verb: "Modify"
+                target: "config/models.toml — add supports_tools boolean to each tier (true for whisper/workhorse/coder/cloud_*, false for thinker)"
+              - verb: "Modify"
+                target: "lib/homunculus/agent/models/router.rb — in execute_request, check tier_config['supports_tools']; when false, pass tools: nil to provider; log warning"
+              - verb: "Test"
+                target: "spec/homunculus/agent/models/router_spec.rb — tools stripped for thinker, passed for workhorse, default true when key missing"
+            acceptance_criteria:
+              - given: "Request routed to thinker tier with tools in payload"
+                when: "execute_request runs"
+                then: "tools are stripped (nil) before provider call"
+              - given: "Request routed to workhorse tier with tools"
+                when: "execute_request runs"
+                then: "tools are passed through unchanged"
+              - given: "Tier with supports_tools = false"
+                when: "tools are stripped"
+                then: "a warning is logged with tier name"
+              - given: "Tier config missing supports_tools key"
+                when: "execute_request runs"
+                then: "tools are passed through (default: true)"
+            agent_hints:
+              recommended_class: "builder"
+              context_files:
+                - "config/models.toml"
+                - "lib/homunculus/agent/models/router.rb"
+                - "spec/homunculus/agent/models/router_spec.rb"
+              validation_gates:
+                p0: "tool-incompatible tier never receives tools payload"
+                coverage: "router spec covers strip/pass/default"
+
+          - id: "S-2"
+            title: "Improve OllamaProvider error diagnostics"
+            timebox: "1d"
+            risk: "P1"
+            action_plan:
+              - verb: "Modify"
+                target: "lib/homunculus/agent/models/ollama_provider.rb — streaming rescue: extract HTTP status/body, raise PermanentProviderError for 400"
+              - verb: "Modify"
+                target: "Error message for 400 should suggest checking supports_tools in models.toml"
+              - verb: "Test"
+                target: "spec/homunculus/agent/models/ollama_provider_spec.rb — 400 raises PermanentProviderError with diagnostic message"
+            acceptance_criteria:
+              - given: "Streaming request receives HTTP 400"
+                when: "error is caught"
+                then: "PermanentProviderError raised (not generic ProviderError)"
+              - given: "Any HTTP error during streaming"
+                when: "error message is constructed"
+                then: "includes HTTP status code and response body if available"
+              - given: "400 error"
+                when: "error message constructed"
+                then: "suggests checking supports_tools in models.toml"
+            agent_hints:
+              recommended_class: "builder"
+              context_files:
+                - "lib/homunculus/agent/models/ollama_provider.rb"
+                - "lib/homunculus/utils/http_error_handling.rb"
+                - "spec/homunculus/agent/models/ollama_provider_spec.rb"
+              validation_gates:
+                p0: "400 -> PermanentProviderError (triggers escalation, not retry)"
+                coverage: "spec covers 400/404/500 streaming errors"
+
+      - id: "F-2"
+        name: "Shared SAG Concern & TUI Registration"
+        stories:
+          - id: "S-3"
+            title: "Extract shared SAG factory concern"
+            timebox: "≤2d"
+            risk: "P0"
+            action_plan:
+              - verb: "Create"
+                target: "lib/homunculus/interfaces/concerns/sag_research.rb — shared module with build_sag_pipeline_factory, build_sag_embedder, build_sag_llm"
+              - verb: "Modify"
+                target: "lib/homunculus/interfaces/cli.rb — remove inline SAG methods, include Concerns::SAGResearch"
+              - verb: "Modify"
+                target: "lib/homunculus/interfaces/telegram/sag_research.rb — delegate to shared concern or replace body"
+              - verb: "Test"
+                target: "spec/homunculus/interfaces/concerns/sag_research_spec.rb — factory methods, LLM lambda with/without router"
+            acceptance_criteria:
+              - given: "Shared module included in CLI"
+                when: "build_sag_pipeline_factory called"
+                then: "produces working pipeline factory identical to previous inline version"
+              - given: "Shared module included in TUI with @models_router"
+                when: "build_sag_llm called"
+                then: "routes through models router (workhorse tier, no tools)"
+              - given: "Shared module included in any interface"
+                when: "@config.sag.enabled is false"
+                then: "no SAG components are instantiated"
+              - given: "Shared module"
+                when: "build_sag_embedder called without local model config"
+                then: "returns nil gracefully"
+            agent_hints:
+              recommended_class: "builder"
+              context_files:
+                - "lib/homunculus/interfaces/cli.rb"
+                - "lib/homunculus/interfaces/telegram/sag_research.rb"
+                - "lib/homunculus/tools/web_research.rb"
+              validation_gates:
+                p0: "CLI integration tests still pass"
+                coverage: "concern spec covers factory, embedder, llm lambda"
+
+          - id: "S-4"
+            title: "Register web_research in TUI"
+            timebox: "1d"
+            risk: "P1"
+            action_plan:
+              - verb: "Modify"
+                target: "lib/homunculus/interfaces/tui.rb — include Concerns::SAGResearch, require concern file"
+              - verb: "Modify"
+                target: "tui.rb#build_tool_registry — add guarded WebResearch registration (same pattern as CLI)"
+              - verb: "Test"
+                target: "TUI spec or integration — web_research in registry when SAG enabled, absent when disabled"
+            acceptance_criteria:
+              - given: "SAG enabled in config"
+                when: "TUI starts"
+                then: "web_research tool is present in the registry"
+              - given: "SAG disabled in config"
+                when: "TUI starts"
+                then: "web_research is not in the registry (no crash)"
+              - given: "SAG enabled and user sends research query"
+                when: "routed to workhorse tier"
+                then: "tools include web_research and model can invoke it"
+              - given: "SAG enabled"
+                when: "build_sag_llm needs LLM inference"
+                then: "uses @models_router (not a separate provider)"
+            agent_hints:
+              recommended_class: "builder"
+              context_files:
+                - "lib/homunculus/interfaces/tui.rb"
+                - "lib/homunculus/interfaces/cli.rb"
+                - "lib/homunculus/interfaces/concerns/sag_research.rb"
+              validation_gates:
+                p0: "TUI boots cleanly with SAG enabled"
+                coverage: "tool appears in registry"
+
+      - id: "F-3"
+        name: "Integration Verification"
+        stories:
+          - id: "S-5"
+            title: "End-to-end routing + tool compatibility specs"
+            timebox: "≤2d"
+            risk: "P1"
+            action_plan:
+              - verb: "Create"
+                target: "spec/integration/tool_routing_spec.rb — Router with mocked OllamaProvider: research→thinker→tools stripped, code→coder→tools passed, default→workhorse→tools passed"
+              - verb: "Extend"
+                target: "spec/homunculus/agent/models/router_spec.rb — edge cases: missing supports_tools defaults true, escalation from tool-stripped tier"
+              - verb: "Verify"
+                target: "bin/dev test full suite, ≥75% coverage"
+            acceptance_criteria:
+              - given: "'research' keyword in message"
+                when: "routed through full Router"
+                then: "thinker tier selected AND tools are nil in provider call"
+              - given: "'code' keyword in message"
+                when: "routed through full Router"
+                then: "coder tier selected AND tools are present"
+              - given: "Thinker tier returns error despite tool stripping"
+                when: "escalation is enabled"
+                then: "escalation fires normally"
+              - given: "Full test suite"
+                when: "bin/dev test runs"
+                then: "all pass with ≥75% coverage"
+            agent_hints:
+              recommended_class: "builder"
+              context_files:
+                - "spec/homunculus/agent/models/router_spec.rb"
+                - "lib/homunculus/agent/models/router.rb"
+              validation_gates:
+                p0: "full suite green"
+                coverage: "≥75% overall"
+
+execution_plan:
+  phases:
+    - name: "Foundation — Router Tool Compatibility"
+      stories: ["S-1", "S-2"]
+      agent_class: "builder"
+      parallel: true
+      notes: "S-1 and S-2 are independent; can execute concurrently"
+    - name: "Shared SAG Concern + TUI Registration"
+      stories: ["S-3", "S-4"]
+      agent_class: "builder"
+      parallel: false
+      notes: "S-4 depends on S-3 (shared concern must exist first)"
+    - name: "Integration Verification"
+      stories: ["S-5"]
+      agent_class: "builder"
+      notes: "Depends on S-1 and S-3 being complete"
+
+files_changed:
+  new:
+    - "lib/homunculus/interfaces/concerns/sag_research.rb"
+    - "spec/homunculus/interfaces/concerns/sag_research_spec.rb"
+    - "spec/integration/tool_routing_spec.rb"
+  edit:
+    - "config/models.toml"
+    - "lib/homunculus/agent/models/router.rb"
+    - "lib/homunculus/agent/models/ollama_provider.rb"
+    - "lib/homunculus/interfaces/tui.rb"
+    - "lib/homunculus/interfaces/cli.rb"
+    - "lib/homunculus/interfaces/telegram/sag_research.rb"
+    - "spec/homunculus/agent/models/router_spec.rb"
+    - "spec/homunculus/agent/models/ollama_provider_spec.rb"

@@ -360,6 +360,97 @@ RSpec.describe Homunculus::Agent::Models::Router do
       end
     end
 
+    context "tool compatibility" do
+      let(:tools) { [{ name: "echo", description: "Echo text", parameters: {} }] }
+
+      it "strips tools for tiers with supports_tools = false" do
+        allow(mock_ollama).to receive(:generate) do |**kwargs|
+          expect(kwargs[:tools]).to be_nil
+          {
+            content: "Deep reasoning response.",
+            tool_calls: [],
+            model: "homunculus-thinker",
+            usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+            finish_reason: :stop,
+            cost_usd: 0.0,
+            metadata: {}
+          }
+        end
+
+        response = router.generate(messages: messages, tools: tools, tier: :thinker)
+
+        expect(response.content).to eq("Deep reasoning response.")
+        expect(response.tier).to eq(:thinker)
+      end
+
+      it "passes tools through for tiers with supports_tools = true" do
+        allow(mock_ollama).to receive(:generate) do |**kwargs|
+          expect(kwargs[:tools]).to eq(tools)
+          {
+            content: "Response with tools.",
+            tool_calls: [],
+            model: "homunculus-workhorse",
+            usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+            finish_reason: :stop,
+            cost_usd: 0.0,
+            metadata: {}
+          }
+        end
+
+        response = router.generate(messages: messages, tools: tools)
+
+        expect(response.content).to eq("Response with tools.")
+      end
+
+      it "defaults to passing tools when supports_tools key is missing" do
+        config_without_flag = models_config.dup
+        config_without_flag["tiers"] = config_without_flag["tiers"].dup
+        config_without_flag["tiers"]["workhorse"] =
+          config_without_flag["tiers"]["workhorse"].except("supports_tools")
+
+        local_router = described_class.new(config: config_without_flag, providers: providers, usage_tracker: tracker)
+
+        allow(mock_ollama).to receive(:generate) do |**kwargs|
+          expect(kwargs[:tools]).to eq(tools)
+          {
+            content: "Here is a complete response with tools support enabled for the workhorse tier.",
+            tool_calls: [],
+            model: "homunculus-workhorse",
+            usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+            finish_reason: :stop,
+            cost_usd: 0.0,
+            metadata: {}
+          }
+        end
+
+        response = local_router.generate(messages: messages, tools: tools)
+        expect(response.content).to include("complete response with tools support")
+      end
+
+      it "keyword 'research' routes to thinker with tools stripped" do
+        allow(mock_ollama).to receive(:generate) do |**kwargs|
+          expect(kwargs[:tools]).to be_nil
+          {
+            content: "Research analysis without tools.",
+            tool_calls: [],
+            model: "homunculus-thinker",
+            usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+            finish_reason: :stop,
+            cost_usd: 0.0,
+            metadata: {}
+          }
+        end
+
+        response = router.generate(
+          messages: messages, tools: tools,
+          user_message: "Make a research about models fine-tunning"
+        )
+
+        expect(response.tier).to eq(:thinker)
+        expect(response.content).to eq("Research analysis without tools.")
+      end
+    end
+
     context "unknown tier" do
       it "raises ConfigError for unknown tier" do
         expect do

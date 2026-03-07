@@ -137,14 +137,21 @@ module Homunculus
           max_tokens = tier_config.fetch("max_tokens", 4096)
           context_window = tier_config.fetch("context_window", nil)
 
+          effective_tools = tools
+          unless tier_config.fetch("supports_tools", true)
+            @logger.info("Stripping tools for tier that does not support tool calling",
+                         tier: resolved_tier, model: model)
+            effective_tools = nil
+          end
+
           raw_response = if stream && block
                            provider.generate_stream(
-                             messages:, model:, tools:, temperature:,
+                             messages:, model:, tools: effective_tools, temperature:,
                              max_tokens:, context_window:, &block
                            )
                          else
                            provider.generate(
-                             messages:, model:, tools:, temperature:,
+                             messages:, model:, tools: effective_tools, temperature:,
                              max_tokens:, context_window:
                            )
                          end

@@ -24,7 +24,7 @@ You implement features in brownfield codebases. You are a partner to developers 
 
 ```
 A ──▶ P ──▶ I ──▶ V ──┬──▶ Δ (success)
-                      └──▶ R ──▶ retry or ESCALATE
+                         └──▶ R ──▶ retry or ESCALATE
 ```
 
 **A**nalyze → **P**lan → **I**mplement → **V**erify → **Δ** Delta / **R** Reflect
