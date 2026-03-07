@@ -41,11 +41,6 @@ module Homunculus
 
           elapsed = monotonic_ms - start_time
 
-          if http_response.status == 404
-            raise Models::PermanentProviderError,
-                  "Ollama model not found: #{model} (HTTP 404). Ensure the model is pulled: ollama pull #{model}"
-          end
-
           raise ProviderError, "Ollama returned #{http_response.status}: #{http_response.body}" unless http_response.status == 200
 
           parsed = JSON.parse(http_response.body.to_s)
@@ -100,21 +95,7 @@ module Homunculus
               final_data = chunk if chunk["done"]
             end
           rescue HTTPX::Error => e
-            status, body = extract_http_error_details(e)
-
-            if status == 404 || e.message.match?(/404|not found/i)
-              raise Models::PermanentProviderError,
-                    "Ollama model not found: #{model}. Ensure the model is pulled: ollama pull #{model}"
-            end
-
-            if status == 400
-              raise Models::PermanentProviderError,
-                    "Ollama rejected request for model #{model} (HTTP 400). " \
-                    "#{body} " \
-                    "This model may not support tool calling — check supports_tools in models.toml."
-            end
-
-            raise ProviderError, "Ollama stream error (HTTP #{status || "unknown"}): #{e.message}"
+            raise ProviderError, "Ollama stream error: #{e.message}"
           end
 
           # StreamResponse#each already calls response.raise_for_status, so reaching here means success
@@ -275,17 +256,6 @@ module Homunculus
               load_duration: final_data["load_duration"]
             }
           }
-        end
-
-        def extract_http_error_details(error)
-          response = error.respond_to?(:response) ? error.response : nil
-          status = response.respond_to?(:status) ? response.status : nil
-          body = response.respond_to?(:body) ? response.body.to_s.strip : nil
-
-          if !status && (m = error.message.match(/(\d{3})/))
-            status = m[1].to_i
-          end
-          [status, body]
         end
 
         def raise_if_error!(response)

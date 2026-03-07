@@ -109,13 +109,6 @@ module Homunculus
             @tracker&.record(response)
 
             return response
-          rescue PermanentProviderError => e
-            @logger.error("Permanent provider error — skipping retries", error: e.message, tier: resolved_tier)
-            if escalation_enabled?
-              @logger.warn("Escalating to cloud due to permanent error", from_tier: resolved_tier)
-              return escalate_to_cloud(messages:, tools:, from_tier: resolved_tier, stream:, &)
-            end
-            raise
           rescue ProviderError => e
             retries += 1
             @logger.error("Provider error", attempt: retries, max: max_retries, error: e.message)
@@ -137,21 +130,14 @@ module Homunculus
           max_tokens = tier_config.fetch("max_tokens", 4096)
           context_window = tier_config.fetch("context_window", nil)
 
-          effective_tools = tools
-          unless tier_config.fetch("supports_tools", true)
-            @logger.info("Stripping tools for tier that does not support tool calling",
-                         tier: resolved_tier, model: model)
-            effective_tools = nil
-          end
-
           raw_response = if stream && block
                            provider.generate_stream(
-                             messages:, model:, tools: effective_tools, temperature:,
+                             messages:, model:, tools:, temperature:,
                              max_tokens:, context_window:, &block
                            )
                          else
                            provider.generate(
-                             messages:, model:, tools: effective_tools, temperature:,
+                             messages:, model:, tools:, temperature:,
                              max_tokens:, context_window:
                            )
                          end
@@ -266,7 +252,6 @@ module Homunculus
       # Error classes for the models module
       class ConfigError < StandardError; end
       class ProviderError < StandardError; end
-      class PermanentProviderError < ProviderError; end
     end
   end
 end

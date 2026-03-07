@@ -3,7 +3,6 @@
 require "sequel"
 require "fileutils"
 require "io/console"
-require_relative "concerns/sag_research"
 
 module Homunculus
   module Interfaces
@@ -24,7 +23,6 @@ module Homunculus
     # input) rather than clearing the full screen on every keystroke.
     class TUI
       include SemanticLogger::Loggable
-      include Concerns::SAGResearch
 
       HEADER_ROWS  = 3
       STATUS_ROWS  = 1
@@ -210,9 +208,6 @@ module Homunculus
           registry.register(Tools::MemorySave.new(memory_store: @memory_store))
           registry.register(Tools::MemoryDailyLog.new(memory_store: @memory_store))
         end
-
-        registry.register(Tools::WebResearch.new(pipeline_factory: build_sag_pipeline_factory)) if @config.sag.enabled
-
         registry
       end
 
