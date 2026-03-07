@@ -4,14 +4,12 @@ require "sequel"
 require "fileutils"
 require "telegram/bot"
 require_relative "telegram/memory_curation"
-require_relative "telegram/sag_research"
 
 module Homunculus
   module Interfaces
     class Telegram
       include SemanticLogger::Loggable
       include MemoryCuration
-      include SAGResearch
 
       # Per-chat session entry
       SessionEntry = Struct.new(:session, :last_activity, keyword_init: true)
@@ -179,9 +177,6 @@ module Homunculus
           registry.register(Tools::MemoryDailyLog.new(memory_store: @memory_store))
           registry.register(Tools::MemoryCurate.new(memory_store: @memory_store))
         end
-
-        # Register SAG web research tool
-        registry.register(Tools::WebResearch.new(pipeline_factory: build_sag_pipeline_factory)) if @config.sag.enabled
 
         registry
       end
