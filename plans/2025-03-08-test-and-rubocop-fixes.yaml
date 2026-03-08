@@ -1,0 +1,124 @@
+# Agent handoff: Test and RuboCop fixes
+# Generated: 2025-03-08
+# Theme: Fix test and RuboCop failures
+# Project: Test and Lint remediation
+
+metadata:
+  plan_id: 2025-03-08-test-and-rubocop-fixes
+  classification: BUG_SPEC / CHANGE
+  test_failures_at_plan_time: 0
+  rubocop_offenses_at_plan_time: 16
+  confidence: 0.95
+  confidence_decision: AUTO_PROCEED
+
+confidence_factors:
+  pattern_match: 0.95
+  requirement_clarity: 0.95
+  decomposition_stability: 0.90
+  constraint_compliance: 1.0
+
+constraints:
+  - Do not auto-correct Metrics/* (per CLAUDE.md)
+  - Use bin/dev lint -A only for Style/Layout/Naming (and Lint where safe)
+  - Run bin/dev test and bin/dev lint after changes
+
+files_affected:
+  - bin/ollama_list_table.rb
+  - lib/homunculus/agent/multi_agent_manager.rb
+  - lib/homunculus/agent/prompt.rb
+  - lib/homunculus/memory/indexer.rb
+  - lib/homunculus/memory/store.rb
+  - lib/homunculus/skills/loader.rb
+  - lib/homunculus/tools/files.rb
+
+offenses_summary:
+  by_file:
+    bin/ollama_list_table.rb: 12
+    lib/homunculus/agent/multi_agent_manager.rb: 1
+    lib/homunculus/agent/prompt.rb: 1
+    lib/homunculus/memory/indexer.rb: 1
+    lib/homunculus/memory/store.rb: 1
+    lib/homunculus/skills/loader.rb: 1
+    lib/homunculus/tools/files.rb: 1
+  by_cop:
+    Layout/IndentationWidth: 1
+    Layout/ElseAlignment: 1
+    Layout/EndAlignment: 1
+    Layout/EmptyLineAfterGuardClause: 2
+    Style/FetchEnvVar: 1
+    Style/FormatStringToken: 4
+    Lint/RedundantRequireStatement: 6
+  autocorrectable_count: 12
+
+execution_sequence:
+  - story_1_1
+  - story_1_2
+
+stories:
+  - id: story_1_1
+    title: Apply safe RuboCop auto-corrections
+    timebox: "<=1d"
+    user_story: "As a maintainer, I want the 12 autocorrectable RuboCop offenses fixed so that bin/dev lint passes for those cops."
+    action_plan:
+      - Run bin/dev lint -A
+      - Verify no Metrics/* or behavioral changes
+      - Run bin/dev test and bin/dev lint
+    acceptance_criteria:
+      - "GIVEN the repo with current offenses, WHEN bin/dev lint -A is run, THEN the 12 correctable offenses are fixed and no new offenses introduced."
+      - "GIVEN the same repo, WHEN bin/dev test is run, THEN all 916 examples still pass."
+    technical_context:
+      pattern: "Safe auto-correct only (Style/Layout/Naming/Lint)"
+      files:
+        - bin/ollama_list_table.rb
+        - lib/homunculus/agent/multi_agent_manager.rb
+        - lib/homunculus/agent/prompt.rb
+        - lib/homunculus/memory/indexer.rb
+        - lib/homunculus/memory/store.rb
+        - lib/homunculus/skills/loader.rb
+        - lib/homunculus/tools/files.rb
+    agent_hints:
+      recommended_agent: Builder
+      context_files:
+        - CLAUDE.md
+      validation_gates:
+        - bin/dev lint
+        - bin/dev test
+    tasks:
+      - id: task_1_1_1
+        action: Run bin/dev lint -A from repo root
+      - id: task_1_1_2
+        action: Run bin/dev test and bin/dev lint; confirm 0 failures and 0 offenses for corrected cops
+
+  - id: story_1_2
+    title: Fix Style/FormatStringToken in bin/ollama_list_table.rb
+    timebox: "<=1d"
+    user_story: "As a maintainer, I want the printf on line 43 to use annotated format tokens so that Style/FormatStringToken is satisfied."
+    action_plan:
+      - Replace printf format string with annotated tokens (e.g. %<tier>s)
+      - Pass hash or ensure positional args still match; preserve exact output
+      - Run bin/dev lint and sanity-check script output
+    acceptance_criteria:
+      - "GIVEN bin/ollama_list_table.rb, WHEN RuboCop runs, THEN no Style/FormatStringToken offenses on line 43."
+      - "GIVEN the same script and sample stdin, WHEN run, THEN stdout format is unchanged (column widths and content)."
+    technical_context:
+      pattern: "Style/FormatStringToken — use %<name>s and pass Hash or keyword args"
+      file: bin/ollama_list_table.rb
+      line: 43
+      current_code: 'printf "  %-10s  %-20s  %-30s  %s\n", tier, model, desc, status'
+    agent_hints:
+      recommended_agent: Builder
+      context_files:
+        - bin/ollama_list_table.rb
+      validation_gates:
+        - bin/dev lint
+        - Manual run of script with sample JSON (e.g. from bin/ollama list)
+    tasks:
+      - id: task_1_2_1
+        action: Edit line 43 to use annotated format tokens and matching arguments
+      - id: task_1_2_2
+        action: Run bin/dev lint; run script with sample input and verify table output unchanged
+
+verification_gates:
+  final:
+    - bin/dev lint exits 0
+    - bin/dev test reports 0 failures

@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "pathname"
-
 module Homunculus
   module Skills
     # Loads skill definitions from workspace/skills/ and provides matching and injection.

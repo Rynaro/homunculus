@@ -8,7 +8,7 @@ module Homunculus
       module Theme
         # 256-color palette (foreground: \e[38;5;Nm, background: \e[48;5;Nm)
         C256 = {
-          user: "\e[38;5;75m",        # soft sky blue
+          user: "\e[38;5;75m", # soft sky blue
           assistant: "\e[38;5;108m", # warm sage green
           info: "\e[38;5;183m",      # lavender mist
           error: "\e[38;5;174m",     # soft coral
@@ -72,6 +72,7 @@ module Homunculus
             "#{codes}#{text}#{RESET}"
           end
 
+          # rubocop:disable Metrics/CyclomaticComplexity
           def ansi_for(style)
             case style
             when :reset then RESET
@@ -93,9 +94,9 @@ module Homunculus
             when :bright_blue then palette[:accent]
             when :cyan then palette[:user]
             when :white then RESET
-            else nil
             end
           end
+          # rubocop:enable Metrics/CyclomaticComplexity
 
           def visible_len(str)
             str.to_s.gsub(/\e\[[0-9;]*[mGKHF]/, "").length

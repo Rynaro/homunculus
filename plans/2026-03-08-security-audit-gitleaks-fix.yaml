@@ -1,0 +1,60 @@
+# Agent handoff: Fix Security Audit (Gitleaks) CI failure
+# Generated from SPECTRA plan 2026-03-08-security-audit-gitleaks-fix.md
+# Target agent: coder (APIVR-Delta)
+
+metadata:
+  plan_id: 2026-03-08-security-audit-gitleaks-fix
+  created: "2026-03-08"
+  theme: CI reliability
+  project: Security Audit job
+  confidence: 0.95
+
+summary: |
+  Security Audit job fails in CI because gitleaks-action runs `git log base^..head`
+  for the PR; the base commit is not in the repo when checkout uses default
+  shallow clone (fetch-depth: 1). Fix: set fetch-depth: 0 on the Checkout step
+  for the security job only.
+
+execution_plan:
+  - step: 1
+    action: Modify
+    target: .github/workflows/ci.yml
+    detail: |
+      In the Security Audit job (name "Security Audit", job id "security"),
+      in the first step "Checkout" (uses: actions/checkout@v4), add:
+        with:
+          fetch-depth: 0
+      so the clone has full history and the PR base commit exists for gitleaks.
+    context_files:
+      - .github/workflows/ci.yml
+    acceptance:
+      - Security job checkout step includes fetch-depth: 0
+      - No other jobs or steps changed
+    verification:
+      - Re-run Security Audit job on a PR (or push branch and open PR); job should complete without "unknown revision" / "fatal: ambiguous argument" from git.
+
+stories:
+  - id: S1
+    title: Fix Security Audit checkout for gitleaks commit range
+    user_story: "As a maintainer, I want the Security Audit job to succeed on PRs so that gitleaks can scan the PR commit range without unknown revision errors."
+    timebox: 1d
+    status: pending
+    tasks:
+      - id: T1
+        action: Add fetch-depth 0 to Security job Checkout step
+        file: .github/workflows/ci.yml
+        agent_hints:
+          agent_class: builder
+          context_files:
+            - .github/workflows/ci.yml
+            - plans/2026-03-08-security-audit-gitleaks-fix.md
+          validation_gates:
+            - Lint workflow (optional): yamllint or CI run
+            - Confirm only the Checkout step of the security job is modified
+
+constraints:
+  - Do not change bundler-audit step or other jobs.
+  - Do not add .gitleaks.toml or gitleaks config unless explicitly requested later.
+  - No code outside .github/workflows/ci.yml for this fix.
+
+risk_tags: []

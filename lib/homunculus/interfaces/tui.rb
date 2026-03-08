@@ -28,6 +28,7 @@ module Homunculus
     #
     # Rendering strategy: redraw only the changed regions (chat tail, status,
     # input) rather than clearing the full screen on every keystroke.
+    # rubocop:disable Metrics/ClassLength
     class TUI
       include SemanticLogger::Loggable
       include TUI::Theme
@@ -106,18 +107,18 @@ module Homunculus
         )
 
         status_cb = build_status_callback
-        if @models_router
-          @agent_loop = build_loop_with_models_router(status_callback: status_cb)
-        else
-          @agent_loop = Agent::Loop.new(
-            config: @config,
-            provider: @provider,
-            tools: @tool_registry,
-            prompt_builder: @prompt_builder,
-            audit: @audit,
-            status_callback: status_cb
-          )
-        end
+        @agent_loop = if @models_router
+                        build_loop_with_models_router(status_callback: status_cb)
+                      else
+                        Agent::Loop.new(
+                          config: @config,
+                          provider: @provider,
+                          tools: @tool_registry,
+                          prompt_builder: @prompt_builder,
+                          audit: @audit,
+                          status_callback: status_cb
+                        )
+                      end
 
         setup_scheduler! if @config.scheduler.enabled
       end
@@ -238,7 +239,7 @@ module Homunculus
         llm_adapter = build_sag_llm_adapter
         return unless llm_adapter
 
-        embedder = @memory_store&.respond_to?(:embedder) ? @memory_store.embedder : nil
+        embedder = @memory_store.respond_to?(:embedder) ? @memory_store.embedder : nil
         factory = SAG::PipelineFactory.new(
           config: @config.sag,
           llm_adapter: llm_adapter,
@@ -329,7 +330,7 @@ module Homunculus
 
       # ── Terminal Setup ─────────────────────────────────────────────
 
-      def with_raw_terminal
+      def with_raw_terminal(&)
         # Redirect $stderr at the OS level so warn(), gems, and C extensions that
         # write directly to fd 2 don't bleed into the TUI's positioned rendering.
         log_path = File.expand_path("data/tui.log", Dir.pwd)
@@ -344,7 +345,7 @@ module Homunculus
         # Raw stdin: no echo, no line buffering — so arrow keys send escape sequences
         # that we can read and handle instead of being echoed as ^[[D etc.
         if $stdin.respond_to?(:raw)
-          $stdin.raw { yield }
+          $stdin.raw(&)
         else
           yield
         end
@@ -442,11 +443,7 @@ module Homunculus
         left_pad = [(term_width - title_len) / 2, 0].max
         right_pad = [term_width - left_pad - title_len - 1 - date_len, 0].max
         $stdout.write(
-          (" " * left_pad) +
-          paint(title_centered, :bold) +
-          (" " * right_pad) +
-          " " +
-          paint(date_str, :muted)
+          "#{" " * left_pad}#{paint(title_centered, :bold)}#{" " * right_pad} #{paint(date_str, :muted)}"
         )
         move_to(1, 3)
         tagline = @identity_line.to_s.strip
@@ -502,13 +499,9 @@ module Homunculus
           prev_role = nil
           prev_date = nil
           @messages.each do |msg|
-            msg_date = msg[:timestamp] ? msg[:timestamp].to_date : nil
-            if prev_date && msg_date && prev_date != msg_date
-              all_lines << paint(date_separator_line(msg[:timestamp], w), :muted)
-            end
-            if prev_role && prev_role != msg[:role]
-              all_lines << paint(turn_separator_line(w), :muted)
-            end
+            msg_date = msg[:timestamp]&.to_date
+            all_lines << paint(date_separator_line(msg[:timestamp], w), :muted) if prev_date && msg_date && prev_date != msg_date
+            all_lines << paint(turn_separator_line(w), :muted) if prev_role && prev_role != msg[:role]
             all_lines.concat(renderer.render(msg))
             all_lines << ""
             prev_role = msg[:role]
@@ -519,14 +512,14 @@ module Homunculus
       end
 
       def turn_separator_line(width)
-        seg = Theme::TURN_SEPARATOR + " "
+        seg = "#{Theme::TURN_SEPARATOR} "
         (seg * ((width / seg.length) + 1))[0, width]
       end
 
       def date_separator_line(ts, width)
-        str = "── #{ts.strftime('%B %d, %Y')} ──"
+        str = "── #{ts.strftime("%B %d, %Y")} ──"
         pad = [width - visible_len(str), 0].max
-        " " * (pad / 2) + str + " " * (pad - pad / 2)
+        (" " * (pad / 2)) + str + (" " * (pad - (pad / 2)))
       end
 
       def wrap_plain_line(text, width)
@@ -576,7 +569,7 @@ module Homunculus
         sections = [
           model_short ? "#{Theme::ROLE_ASSISTANT} #{model_short}" : nil,
           token_usage_label ? "#{token_usage_label} tokens" : nil,
-          turn_label ? turn_label.sub(/\Aturns: /, "turn ") : nil,
+          turn_label&.sub(/\Aturns: /, "turn "),
           elapsed_session_time,
           status_part
         ].compact
@@ -585,15 +578,15 @@ module Homunculus
         out = " "
         sections.each_with_index do |s, i|
           out += paint(sep, :muted) if i.positive?
-          if i == 0 && model_style
-            out += paint(s, model_style)
-          elsif i == sections.length - 1 && @session&.pending_tool_call
-            out += paint(s, :accent)
-          else
-            out += paint(s, :muted)
-          end
+          out += if i.zero? && model_style
+                   paint(s, model_style)
+                 elsif i == sections.length - 1 && @session&.pending_tool_call
+                   paint(s, :accent)
+                 else
+                   paint(s, :muted)
+                 end
         end
-        out + (" " * pad) + " "
+        "#{out}#{" " * pad} "
       end
 
       def elapsed_session_time
@@ -704,6 +697,7 @@ module Homunculus
       end
 
       # No args: empty line + hide cursor. With input_buffer: draw text + show cursor. Legacy: (text, cursor).
+      # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
       def render_input_line(input_buffer_or_text = nil, cursor_pos = nil)
         status_row = HEADER_ROWS + chat_rows + 1
         input_row  = status_row + 2
@@ -806,7 +800,9 @@ module Homunculus
           process_input(input)
         end
       end
+      # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
 
+      # rubocop:disable Metrics/MethodLength
       def read_line
         input_buffer = TUI::InputBuffer.new
         while @running
@@ -861,6 +857,7 @@ module Homunculus
         end
         nil
       end
+      # rubocop:enable Metrics/MethodLength
 
       def consume_escape_sequence(input_buffer)
         @suggestion_lines = nil
@@ -879,12 +876,10 @@ module Homunculus
 
       # Read the rest of an escape sequence after \e. Waits briefly so we don't leave bytes in the buffer.
       def read_escape_sequence
-        seq = $stdin.read_nonblock(8)
-        seq
+        $stdin.read_nonblock(8)
       rescue IO::WaitReadable
         $stdin.wait_readable(0.1)
-        seq = $stdin.read_nonblock(8)
-        seq
+        $stdin.read_nonblock(8)
       rescue EOFError
         ""
       end
@@ -1130,7 +1125,7 @@ module Homunculus
       end
 
       def push_error_message(text)
-        friendly = text.to_s.start_with?("Error:") ? "Hmm, something went wrong: #{text.to_s.sub(/\AError:\s*/, '')}" : text.to_s
+        friendly = text.to_s.start_with?("Error:") ? "Hmm, something went wrong: #{text.to_s.sub(/\AError:\s*/, "")}" : text.to_s
         @messages_mutex.synchronize { @messages << { role: :error, text: friendly, timestamp: Time.now } }
       end
 
@@ -1149,7 +1144,11 @@ module Homunculus
       end
 
       def session_context_line
-        tier = @current_tier && @current_model ? "#{@current_tier} (#{@current_model})" : (use_models_router? ? "router" : @provider_name.to_s)
+        tier = if @current_tier && @current_model
+                 "#{@current_tier} (#{@current_model})"
+               else
+                 (use_models_router? ? "router" : @provider_name.to_s)
+               end
         "Session started · model: #{tier} · /help for commands"
       end
 
@@ -1240,7 +1239,7 @@ module Homunculus
         out_t = @session.total_output_tokens
         token_str = "#{format_int(in_t)}↓ #{format_int(out_t)}↑"
         tool_count = @messages_mutex.synchronize { @messages.count { |m| m[:role] == :tool_request } }
-        memory_line = (@memory_store && @session.turn_count.positive?) ? "Memory saved. " : ""
+        memory_line = @memory_store && @session.turn_count.positive? ? "Memory saved. " : ""
         lines = [
           "Session complete.",
           "Duration: #{duration_str} · Turns: #{turns} · Tokens: #{token_str}",
@@ -1283,6 +1282,7 @@ module Homunculus
       def horizontal_rule(char = Theme::SEPARATOR_CHAR)
         char * term_width
       end
+      # rubocop:enable Metrics/ClassLength
     end
   end
 end

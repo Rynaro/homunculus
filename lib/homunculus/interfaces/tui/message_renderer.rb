@@ -42,7 +42,7 @@ module Homunculus
           when :system    then "System"
           when :error     then "Error"
           when :tool_request then "Tool"
-          else                 role.to_s.capitalize
+          else role.to_s.capitalize
           end
         end
 
@@ -64,7 +64,7 @@ module Homunculus
           when :error     then :error
           when :info      then :info
           when :tool_request then :accent
-          else                 :muted
+          else :muted
           end
         end
 
@@ -85,7 +85,7 @@ module Homunculus
             arg_line = arg_line[0, inner_w] if arg_line.length > inner_w
             lines << Theme.paint("│  #{arg_line.ljust(inner_w)}│", :accent)
           end
-          lines << Theme.paint("│#{' ' * (w - 2)}│", :accent)
+          lines << Theme.paint("│#{" " * (w - 2)}│", :accent)
           hint1 = "  ◈ Requires confirmation"
           hint2 = "  Type /confirm or /deny"
           lines << Theme.paint("│#{hint1.to_s[0, w - 2].ljust(w - 2)}│", :accent)
@@ -156,7 +156,7 @@ module Homunculus
             rest = rest[(idx + 3)..] || ""
             end_idx = rest.index("```")
             unless end_idx
-              result << { type: :text, content: "```" + rest }
+              result << { type: :text, content: "```#{rest}" }
               break
             end
             result << { type: :code, content: rest[0...end_idx] }
@@ -185,22 +185,19 @@ module Homunculus
         end
 
         def apply_list_line(line)
-          if line.match(/\A\s*[-*]\s+/)
-            line = line.sub(/\A(\s*)[-*](\s+)/, "\\1#{Theme::BULLET_CHAR}\\2")
-          end
+          line = line.sub(/\A(\s*)[-*](\s+)/, "\\1#{Theme::BULLET_CHAR}\\2") if line.match(/\A\s*[-*]\s+/)
           line
         end
 
         def apply_inline_formatting(line)
           # Inline code: `...` -> warm_highlight (non-greedy)
-          line = line.gsub(/`([^`]+)`/) { Theme.paint($1, :warm_highlight) }
+          line = line.gsub(/`([^`]+)`/) { Theme.paint(::Regexp.last_match(1), :warm_highlight) }
           # Bold: **x** or __x__
-          line = line.gsub(/\*\*(.+?)\*\*/) { Theme.paint($1, :bold) }
-          line = line.gsub(/__(.+?)__/) { Theme.paint($1, :bold) }
+          line = line.gsub(/\*\*(.+?)\*\*/) { Theme.paint(::Regexp.last_match(1), :bold) }
+          line = line.gsub(/__(.+?)__/) { Theme.paint(::Regexp.last_match(1), :bold) }
           # Italic: *x* or _x_ (single; avoid breaking **)
-          line = line.gsub(/(?<!\*)\*([^*]+)\*(?!\*)/) { Theme.paint($1, :italic) }
-          line = line.gsub(/(?<!_)_([^_]+)_(?!_)/) { Theme.paint($1, :italic) }
-          line
+          line = line.gsub(/(?<!\*)\*([^*]+)\*(?!\*)/) { Theme.paint(::Regexp.last_match(1), :italic) }
+          line.gsub(/(?<!_)_([^_]+)_(?!_)/) { Theme.paint(::Regexp.last_match(1), :italic) }
         end
 
         def wrap_styled_text(styled_str, indent_len)
@@ -238,7 +235,8 @@ module Homunculus
             if label_end
               label_part = line[0..(label_end + 1)]
               rest_part = line[(label_end + 2)..]
-              return Theme.paint(label_part, color, :bold) + (rest_part.to_s.include?("\e[") ? rest_part.to_s : Theme.paint(rest_part.to_s, :reset))
+              return Theme.paint(label_part, color,
+                                 :bold) + (rest_part.to_s.include?("\e[") ? rest_part.to_s : Theme.paint(rest_part.to_s, :reset))
             end
             Theme.paint(line, color)
           else

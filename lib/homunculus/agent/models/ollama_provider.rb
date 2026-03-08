@@ -79,7 +79,11 @@ module Homunculus
 
           raise_if_error!(stream_response)
           unless stream_response.status == 200
-            body = stream_response.body.to_s rescue ""
+            body = begin
+              stream_response.body.to_s
+            rescue StandardError
+              ""
+            end
             raise ProviderError, "Ollama returned #{stream_response.status}: #{body}"
           end
 

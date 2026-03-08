@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "oj"
-require "pathname"
 require "fileutils"
 
 module Homunculus

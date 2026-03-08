@@ -50,7 +50,7 @@ module Homunculus
 
       private
 
-      def call_via_router(messages, max_tokens)
+      def call_via_router(messages, _max_tokens)
         response = @router.generate(
           messages: messages,
           tools: nil,
