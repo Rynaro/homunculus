@@ -1264,4 +1264,121 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(result).to include("\e[0m")
     end
   end
+
+  # ── Warmup Integration (Story 4) ──────────────────────────────────
+
+  describe "warmup integration" do
+    it "initializes @warmup as an Agent::Warmup instance" do
+      tui = described_class.new(config:)
+      warmup = tui.instance_variable_get(:@warmup)
+      expect(warmup).to be_a(Homunculus::Agent::Warmup)
+    end
+
+    describe "#start_warmup!" do
+      it "calls @warmup.start! with a callback when warmup enabled" do
+        tui = described_class.new(config:)
+        warmup = tui.instance_variable_get(:@warmup)
+        allow(warmup).to receive(:start!)
+        tui.send(:start_warmup!)
+        expect(warmup).to have_received(:start!).with(callback: anything)
+      end
+
+      it "returns early when @warmup is nil" do
+        tui = described_class.new(config:)
+        tui.instance_variable_set(:@warmup, nil)
+        expect { tui.send(:start_warmup!) }.not_to raise_error
+      end
+
+      it "returns early when warmup disabled in config" do
+        disabled_raw = TomlRB.load_file("config/default.toml")
+        disabled_raw["agent"] = { "workspace_path" => workspace_dir, "warmup" => { "enabled" => false } }
+        disabled_raw["scheduler"] = {
+          "enabled" => false,
+          "db_path" => File.join(db_dir, "scheduler.db"),
+          "heartbeat" => {
+            "enabled" => false, "cron" => "*/30 8-22 * * *",
+            "model" => "local",
+            "active_hours_start" => 8, "active_hours_end" => 22,
+            "timezone" => "UTC"
+          },
+          "notification" => { "max_per_hour" => 10, "quiet_hours_queue" => true }
+        }
+        disabled_config = Homunculus::Config.new(disabled_raw)
+        tui = described_class.new(config: disabled_config)
+        warmup = tui.instance_variable_get(:@warmup)
+        allow(warmup).to receive(:start!)
+        tui.send(:start_warmup!)
+        expect(warmup).not_to have_received(:start!)
+      end
+    end
+
+    describe "#warmup_display" do
+      subject(:tui) { described_class.new(config:) }
+
+      before { allow(tui).to receive(:refresh_all) }
+
+      it "pushes info message on :start event" do
+        tui.send(:warmup_display, :start, :preload_chat_model, {})
+        msgs = tui.instance_variable_get(:@messages)
+        expect(msgs.last[:role]).to eq(:info)
+        expect(msgs.last[:text]).to include("Loading chat model")
+        expect(msgs.last[:text]).to include("⏳")
+      end
+
+      it "pushes info message on :complete event with elapsed_ms" do
+        tui.send(:warmup_display, :complete, :preload_chat_model, { elapsed_ms: 250 })
+        msgs = tui.instance_variable_get(:@messages)
+        expect(msgs.last[:text]).to include("✓")
+        expect(msgs.last[:text]).to include("Loading chat model")
+        expect(msgs.last[:text]).to include("250ms")
+      end
+
+      it "pushes info message on :fail event" do
+        tui.send(:warmup_display, :fail, :preload_embedding_model, { error: "timeout" })
+        msgs = tui.instance_variable_get(:@messages)
+        expect(msgs.last[:text]).to include("⚠")
+        expect(msgs.last[:text]).to include("Loading embedding model")
+        expect(msgs.last[:text]).to include("unavailable")
+      end
+
+      it "pushes info message on :done event" do
+        tui.send(:warmup_display, :done, nil, { elapsed_ms: 1500 })
+        msgs = tui.instance_variable_get(:@messages)
+        expect(msgs.last[:text]).to include("✓")
+        expect(msgs.last[:text]).to include("Ready in 1500ms")
+      end
+
+      it "does not push a message on :skip event" do
+        tui.send(:warmup_display, :skip, :preread_workspace_files, {})
+        msgs = tui.instance_variable_get(:@messages)
+        expect(msgs).to be_empty
+      end
+
+      it "calls refresh_all after each event" do
+        tui.send(:warmup_display, :start, :preload_chat_model, {})
+        expect(tui).to have_received(:refresh_all)
+      end
+    end
+
+    describe "#warmup_step_label" do
+      subject(:tui) { described_class.new(config:) }
+
+      it "returns 'Loading chat model' for :preload_chat_model" do
+        expect(tui.send(:warmup_step_label, :preload_chat_model)).to eq("Loading chat model")
+      end
+
+      it "returns 'Loading embedding model' for :preload_embedding_model" do
+        expect(tui.send(:warmup_step_label, :preload_embedding_model)).to eq("Loading embedding model")
+      end
+
+      it "returns 'Pre-reading workspace' for :preread_workspace_files" do
+        expect(tui.send(:warmup_step_label, :preread_workspace_files)).to eq("Pre-reading workspace")
+      end
+
+      it "returns humanized fallback for unknown steps" do
+        result = tui.send(:warmup_step_label, :some_future_step)
+        expect(result).to eq("Some future step")
+      end
+    end
+  end
 end

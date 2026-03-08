@@ -2,6 +2,7 @@
 
 require "sequel"
 require "fileutils"
+require_relative "../agent/warmup"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
 
@@ -15,6 +16,12 @@ module Homunculus
         Model: %<model>s (%<provider>s)
         Type 'quit' to exit, 'confirm' to approve pending actions, 'help' for commands.
       BANNER
+
+      WARMUP_STEP_LABELS = {
+        preload_chat_model: "Loading chat model",
+        preload_embedding_model: "Loading embedding model",
+        preread_workspace_files: "Pre-reading workspace"
+      }.freeze
 
       def initialize(config:, provider_name: nil, model_override: nil)
         @config = config
@@ -35,6 +42,7 @@ module Homunculus
         print_banner
         setup_signal_handlers
         @scheduler_manager&.start
+        start_warmup!
 
         loop_input
       ensure
@@ -75,6 +83,7 @@ module Homunculus
                       end
 
         setup_scheduler! if @config.scheduler.enabled
+        build_warmup!
       end
 
       def use_models_router?
@@ -566,6 +575,44 @@ module Homunculus
             puts "    #{time} — #{exec[:status]} (#{exec[:duration_ms]}ms)"
           end
         end
+      end
+
+      def build_warmup!
+        @warmup = Agent::Warmup.new(
+          ollama_provider: (defined?(@ollama_provider) && @ollama_provider) || nil,
+          embedder: @memory_store&.embedder,
+          config: @config,
+          workspace_path: @config.agent.workspace_path
+        )
+      rescue StandardError => e
+        logger.warn("Warmup initialization failed", error: e.message)
+        @warmup = nil
+      end
+
+      def start_warmup!
+        return if @warmup.nil? || !@config.agent.warmup.enabled
+
+        @warmup.start!(callback: method(:warmup_display))
+      end
+
+      def warmup_display(event, step, detail)
+        case event
+        when :start
+          puts "#{colorize("⏳", :dim)} #{warmup_step_label(step)}..."
+        when :complete
+          puts "  #{colorize("✓", :green)} #{warmup_step_label(step)} (#{detail[:elapsed_ms]}ms)"
+        when :skip
+          nil
+        when :fail
+          puts colorize("  ✗ #{warmup_step_label(step)}: #{detail[:error]}", :yellow)
+        when :done
+          puts "#{colorize("✓", :green)} Ready (#{detail[:elapsed_ms]}ms)"
+          puts "-" * 60
+        end
+      end
+
+      def warmup_step_label(step)
+        WARMUP_STEP_LABELS[step]
       end
 
       # Simple ANSI color support (no external gem dependency)

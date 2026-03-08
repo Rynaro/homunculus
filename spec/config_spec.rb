@@ -60,6 +60,23 @@ RSpec.describe Homunculus::Config do
       expect(config.agent.max_execution_time_seconds).to eq(300)
     end
 
+    it "loads warmup configuration with defaults" do
+      warmup = config.agent.warmup
+      expect(warmup.enabled).to be(true)
+      expect(warmup.preload_chat_model).to be(true)
+      expect(warmup.preload_embedding_model).to be(true)
+      expect(warmup.preread_workspace_files).to be(true)
+    end
+
+    it "builds warmup defaults when section is missing from TOML" do
+      raw = TomlRB.load_file("config/default.toml")
+      raw["agent"].delete("warmup")
+      config = described_class.new(raw)
+      warmup = config.agent.warmup
+      expect(warmup.enabled).to be(true)
+      expect(warmup.preload_chat_model).to be(true)
+    end
+
     it "loads tools configuration with sandbox" do
       expect(config.tools.approval_mode).to eq("elevated")
       expect(config.tools.sandbox.enabled).to be(true)

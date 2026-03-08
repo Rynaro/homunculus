@@ -306,6 +306,86 @@ RSpec.describe Homunculus::Interfaces::Telegram do
     end
   end
 
+  # ── Warm-up ────────────────────────────────────────────────────
+
+  describe "warm-up integration" do
+    let(:warmup_instance) { instance_double(Homunculus::Agent::Warmup) }
+
+    before do
+      allow(Homunculus::Agent::Warmup).to receive(:new).and_return(warmup_instance)
+      allow(warmup_instance).to receive(:start!)
+      allow(warmup_instance).to receive(:wait!)
+      allow(warmup_instance).to receive(:elapsed_ms).and_return(1234)
+    end
+
+    describe "#run_warmup!" do
+      it "creates a Warmup instance and blocks until complete" do
+        adapter.send(:run_warmup!)
+
+        expect(Homunculus::Agent::Warmup).to have_received(:new).with(
+          hash_including(
+            config: config,
+            workspace_path: config.agent.workspace_path
+          )
+        )
+        expect(warmup_instance).to have_received(:start!).with(callback: anything)
+        expect(warmup_instance).to have_received(:wait!)
+      end
+
+      it "skips when warmup is disabled" do
+        allow(config.agent.warmup).to receive(:enabled).and_return(false)
+
+        adapter.send(:run_warmup!)
+
+        expect(Homunculus::Agent::Warmup).not_to have_received(:new)
+      end
+
+      it "handles errors gracefully" do
+        allow(Homunculus::Agent::Warmup).to receive(:new).and_raise(StandardError, "boom")
+
+        expect { adapter.send(:run_warmup!) }.not_to raise_error
+      end
+    end
+
+    describe "#build_warmup_ollama_provider" do
+      it "returns an OllamaProvider built from local model config" do
+        provider = adapter.send(:build_warmup_ollama_provider)
+        expect(provider).to be_a(Homunculus::Agent::Models::OllamaProvider)
+      end
+
+      it "returns nil when no local model is configured" do
+        instance = adapter
+        original_escalation = config.models[:escalation]
+        allow(config).to receive(:models).and_return({ escalation: original_escalation })
+
+        provider = instance.send(:build_warmup_ollama_provider)
+        expect(provider).to be_nil
+      end
+    end
+
+    describe "#warmup_log" do
+      it "logs info for start events" do
+        expect { adapter.send(:warmup_log, :start, :preload_chat_model, {}) }
+          .not_to raise_error
+      end
+
+      it "logs info for complete events" do
+        expect { adapter.send(:warmup_log, :complete, :preload_chat_model, { elapsed_ms: 500 }) }
+          .not_to raise_error
+      end
+
+      it "logs warn for fail events" do
+        expect { adapter.send(:warmup_log, :fail, :preload_chat_model, { error: "timeout" }) }
+          .not_to raise_error
+      end
+
+      it "logs info for done events" do
+        expect { adapter.send(:warmup_log, :done, nil, { elapsed_ms: 2000 }) }
+          .not_to raise_error
+      end
+    end
+  end
+
   # ── Helper Methods ─────────────────────────────────────────────
 
   describe "#escape_markdown" do
