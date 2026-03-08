@@ -77,6 +77,12 @@ module Homunculus
 
           stream_response = stream_client.post("#{@base_url}/api/chat", json: payload, stream: true)
 
+          raise_if_error!(stream_response)
+          unless stream_response.status == 200
+            body = stream_response.body.to_s rescue ""
+            raise ProviderError, "Ollama returned #{stream_response.status}: #{body}"
+          end
+
           begin
             stream_response.each_line do |line|
               line = line.strip

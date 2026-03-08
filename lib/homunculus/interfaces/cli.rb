@@ -2,6 +2,8 @@
 
 require "sequel"
 require "fileutils"
+require_relative "../sag/llm_adapter"
+require_relative "../sag/pipeline_factory"
 
 module Homunculus
   module Interfaces
@@ -44,6 +46,15 @@ module Homunculus
       def setup_components!
         @audit = Security::AuditLogger.new(@config.security.audit_log_path)
         @memory_store = build_memory_store
+
+        # Build provider infrastructure first — tool registry needs it for SAG wiring
+        if use_models_router?
+          build_models_router_infrastructure!
+        else
+          model_config = resolve_model_config
+          @provider = Agent::ModelProvider.new(model_config)
+        end
+
         @tool_registry = build_tool_registry
         @prompt_builder = Agent::PromptBuilder.new(
           workspace_path: @config.agent.workspace_path,
@@ -51,19 +62,17 @@ module Homunculus
           memory: @memory_store
         )
 
-        if use_models_router?
-          @agent_loop = build_loop_with_models_router
-        else
-          model_config = resolve_model_config
-          @provider = Agent::ModelProvider.new(model_config)
-          @agent_loop = Agent::Loop.new(
-            config: @config,
-            provider: @provider,
-            tools: @tool_registry,
-            prompt_builder: @prompt_builder,
-            audit: @audit
-          )
-        end
+        @agent_loop = if @models_router
+                        build_loop_with_models_router
+                      else
+                        Agent::Loop.new(
+                          config: @config,
+                          provider: @provider,
+                          tools: @tool_registry,
+                          prompt_builder: @prompt_builder,
+                          audit: @audit
+                        )
+                      end
 
         setup_scheduler! if @config.scheduler.enabled
       end
@@ -76,22 +85,25 @@ module Homunculus
         @models_toml_path ||= File.expand_path("config/models.toml", Dir.pwd)
       end
 
-      def build_loop_with_models_router
+      def build_models_router_infrastructure!
         models_toml = TomlRB.load_file(models_toml_path)
         ollama_config = (models_toml.dig("providers", "ollama") || {}).dup
         ollama_config["base_url"] = @config.models[:local]&.base_url || ollama_config["base_url"] || "http://127.0.0.1:11434"
         ollama_config["timeout_seconds"] =
           @config.models[:local]&.timeout_seconds || ollama_config["timeout_seconds"] || models_toml.dig("defaults",
                                                                                                          "timeout_seconds") || 120
-        ollama_provider = Agent::Models::OllamaProvider.new(config: ollama_config)
-        # Use default model from default.toml for workhorse tier so CLI matches banner
+        @ollama_provider = Agent::Models::OllamaProvider.new(config: ollama_config)
         default_model = @config.models[:local]&.default_model || @config.models[:local]&.model
+        @models_toml_data = models_toml
         if default_model
-          models_toml["tiers"] ||= {}
-          models_toml["tiers"]["workhorse"] ||= {}
-          models_toml["tiers"]["workhorse"] = models_toml["tiers"]["workhorse"].merge("model" => default_model)
+          @models_toml_data["tiers"] ||= {}
+          @models_toml_data["tiers"]["workhorse"] ||= {}
+          @models_toml_data["tiers"]["workhorse"] = @models_toml_data["tiers"]["workhorse"].merge("model" => default_model)
         end
-        models_router = Agent::Models::Router.new(config: models_toml, providers: { ollama: ollama_provider })
+        @models_router = Agent::Models::Router.new(config: @models_toml_data, providers: { ollama: @ollama_provider })
+      end
+
+      def build_loop_with_models_router
         stream_callback = lambda { |chunk|
           if @streaming_first_chunk
             print "\n#{colorize("Homunculus:", :green)} "
@@ -101,7 +113,7 @@ module Homunculus
         }
         Agent::Loop.new(
           config: @config,
-          models_router: models_router,
+          models_router: @models_router,
           stream_callback: stream_callback,
           tools: @tool_registry,
           prompt_builder: @prompt_builder,
@@ -151,7 +163,26 @@ module Homunculus
           registry.register(Tools::MemoryCurate.new(memory_store: @memory_store))
         end
 
+        register_sag_tool(registry) if @config.sag.enabled
         registry
+      end
+
+      def register_sag_tool(registry)
+        llm_adapter = if @models_router
+                        SAG::LLMAdapter.new(router: @models_router)
+                      elsif @provider
+                        SAG::LLMAdapter.new(provider: @provider)
+                      end
+        return unless llm_adapter
+
+        factory = SAG::PipelineFactory.new(
+          config: @config.sag,
+          llm_adapter: llm_adapter
+        )
+        registry.register(Tools::WebResearch.new(pipeline_factory: factory))
+        logger.info("SAG web_research tool registered")
+      rescue StandardError => e
+        logger.warn("SAG tool registration failed — web_research unavailable", error: e.message)
       end
 
       def build_memory_store

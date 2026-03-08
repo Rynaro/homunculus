@@ -3,6 +3,13 @@
 require "sequel"
 require "fileutils"
 require "io/console"
+require_relative "tui/theme"
+require_relative "tui/input_buffer"
+require_relative "tui/activity_indicator"
+require_relative "tui/command_registry"
+require_relative "tui/message_renderer"
+require_relative "../sag/llm_adapter"
+require_relative "../sag/pipeline_factory"
 
 module Homunculus
   module Interfaces
@@ -23,40 +30,14 @@ module Homunculus
     # input) rather than clearing the full screen on every keystroke.
     class TUI
       include SemanticLogger::Loggable
+      include TUI::Theme
 
       HEADER_ROWS  = 3
       STATUS_ROWS  = 1
       INPUT_ROWS   = 2
       CHROME_ROWS  = HEADER_ROWS + STATUS_ROWS + INPUT_ROWS
 
-      ROLE_COLORS = {
-        user: :cyan,
-        assistant: :green,
-        system: :yellow,
-        error: :red,
-        info: :dim
-      }.freeze
-
       AGENT_NAME = "Homunculus"
-
-      ANSI_CODES = {
-        reset: "\e[0m",
-        bold: "\e[1m",
-        dim: "\e[2m",
-        italic: "\e[3m",
-        underline: "\e[4m",
-        reverse: "\e[7m",
-        red: "\e[31m",
-        green: "\e[32m",
-        yellow: "\e[33m",
-        blue: "\e[34m",
-        magenta: "\e[35m",
-        cyan: "\e[36m",
-        white: "\e[37m",
-        bright_blue: "\e[94m",
-        bright_green: "\e[92m",
-        bright_cyan: "\e[96m"
-      }.freeze
 
       def initialize(config:, provider_name: nil, model_override: nil)
         @config         = config
@@ -66,10 +47,18 @@ module Homunculus
         @session        = nil
         @agent_loop     = nil
         @messages       = []   # [{role:, text:, lines: []}]
+        @messages_mutex = Mutex.new
+        @overlay_content = nil # nil or array of lines (help/status overlay); cleared on next input
+        @suggestion_lines = nil # nil or array of strings (slash command suggestions); transient, not in @messages
+        @command_registry = TUI::CommandRegistry.new
         @scroll_offset  = 0    # lines scrolled from the bottom
         @streaming_buf  = nil  # active streaming message entry
+        @streaming_output_tokens_estimate = nil # live estimate during stream (Integer or nil)
         @agent_name     = AGENT_NAME
         @identity_line  = load_identity
+        @current_tier   = nil
+        @current_model  = nil
+        @current_escalated_from = nil
 
         setup_components!
       end
@@ -77,6 +66,7 @@ module Homunculus
       def start
         @running = true
         @session = Session.new
+        @session_start_time = Time.now
 
         setup_signal_handlers
         @scheduler_manager&.start
@@ -87,6 +77,7 @@ module Homunculus
         end
       ensure
         teardown_terminal
+        print_session_summary
         shutdown
       end
 
@@ -97,6 +88,16 @@ module Homunculus
       def setup_components!
         @audit        = Security::AuditLogger.new(@config.security.audit_log_path)
         @memory_store = build_memory_store
+        @activity_indicator = ActivityIndicator.new(redraw: -> { refresh_status_bar })
+
+        # Build provider infrastructure first — tool registry needs it for SAG wiring
+        if use_models_router?
+          build_models_router_infrastructure!
+        else
+          model_config = resolve_model_config
+          @provider = Agent::ModelProvider.new(model_config)
+        end
+
         @tool_registry = build_tool_registry
         @prompt_builder = Agent::PromptBuilder.new(
           workspace_path: @config.agent.workspace_path,
@@ -104,17 +105,17 @@ module Homunculus
           memory: @memory_store
         )
 
-        if use_models_router?
-          @agent_loop = build_loop_with_models_router
+        status_cb = build_status_callback
+        if @models_router
+          @agent_loop = build_loop_with_models_router(status_callback: status_cb)
         else
-          model_config = resolve_model_config
-          @provider   = Agent::ModelProvider.new(model_config)
           @agent_loop = Agent::Loop.new(
             config: @config,
             provider: @provider,
             tools: @tool_registry,
             prompt_builder: @prompt_builder,
-            audit: @audit
+            audit: @audit,
+            status_callback: status_cb
           )
         end
 
@@ -129,7 +130,7 @@ module Homunculus
         @models_toml_path ||= File.expand_path("config/models.toml", Dir.pwd)
       end
 
-      def build_loop_with_models_router
+      def build_models_router_infrastructure!
         models_toml   = TomlRB.load_file(models_toml_path)
         ollama_config = (models_toml.dig("providers", "ollama") || {}).dup
         ollama_config["base_url"] =
@@ -139,42 +140,62 @@ module Homunculus
           ollama_config["timeout_seconds"] ||
           models_toml.dig("defaults", "timeout_seconds") || 120
 
-        ollama_provider = Agent::Models::OllamaProvider.new(config: ollama_config)
-        default_model   = @config.models[:local]&.default_model || @config.models[:local]&.model
+        @ollama_provider = Agent::Models::OllamaProvider.new(config: ollama_config)
+        default_model    = @config.models[:local]&.default_model || @config.models[:local]&.model
 
+        @models_toml_data = models_toml
         if default_model
-          models_toml["tiers"] ||= {}
-          models_toml["tiers"]["workhorse"] ||= {}
-          models_toml["tiers"]["workhorse"] =
-            models_toml["tiers"]["workhorse"].merge("model" => default_model)
+          @models_toml_data["tiers"] ||= {}
+          @models_toml_data["tiers"]["workhorse"] ||= {}
+          @models_toml_data["tiers"]["workhorse"] =
+            @models_toml_data["tiers"]["workhorse"].merge("model" => default_model)
         end
 
-        models_router = Agent::Models::Router.new(
-          config: models_toml,
-          providers: { ollama: ollama_provider }
+        @models_router = Agent::Models::Router.new(
+          config: @models_toml_data,
+          providers: { ollama: @ollama_provider }
         )
+      end
 
+      def build_loop_with_models_router(status_callback: nil)
         stream_cb = build_stream_callback
         Agent::Loop.new(
           config: @config,
-          models_router: models_router,
+          models_router: @models_router,
           stream_callback: stream_cb,
           tools: @tool_registry,
           prompt_builder: @prompt_builder,
-          audit: @audit
+          audit: @audit,
+          status_callback: status_callback
         )
       end
 
       def build_stream_callback
         lambda do |chunk|
-          if @streaming_buf.nil?
-            @streaming_buf = { role: :assistant, text: +"", lines: [] }
-            @messages << @streaming_buf
+          first_chunk = false
+          @messages_mutex.synchronize do
+            if @streaming_buf.nil?
+              @streaming_buf = { role: :assistant, text: +"", lines: [], timestamp: Time.now }
+              @messages << @streaming_buf
+              first_chunk = true
+            end
+            @streaming_buf[:text] << chunk
+            @streaming_output_tokens_estimate = estimate_output_tokens(@streaming_buf[:text])
           end
-          @streaming_buf[:text] << chunk
+          @activity_indicator.stop if first_chunk
           refresh_chat_panel
           refresh_status_bar
         end
+      end
+
+      # Heuristic: word_count * 1.3 or char_count / 4 (whichever is larger).
+      def estimate_output_tokens(text)
+        return 0 if text.nil? || text.empty?
+
+        words = text.split(/\s+/).size
+        by_words = (words * 1.3).round
+        by_chars = (text.length / 4).round
+        [by_words, by_chars].max
       end
 
       def resolve_model_config
@@ -208,7 +229,45 @@ module Homunculus
           registry.register(Tools::MemorySave.new(memory_store: @memory_store))
           registry.register(Tools::MemoryDailyLog.new(memory_store: @memory_store))
         end
+
+        register_sag_tool(registry) if @config.sag.enabled
         registry
+      end
+
+      def register_sag_tool(registry)
+        llm_adapter = build_sag_llm_adapter
+        return unless llm_adapter
+
+        embedder = @memory_store&.respond_to?(:embedder) ? @memory_store.embedder : nil
+        factory = SAG::PipelineFactory.new(
+          config: @config.sag,
+          llm_adapter: llm_adapter,
+          embedder: embedder
+        )
+        registry.register(Tools::WebResearch.new(pipeline_factory: factory))
+        logger.info("SAG web_research tool registered")
+      rescue StandardError => e
+        logger.warn("SAG tool registration failed — web_research unavailable", error: e.message)
+      end
+
+      def build_sag_llm_adapter
+        if @models_router
+          SAG::LLMAdapter.new(router: @models_router)
+        elsif @provider
+          SAG::LLMAdapter.new(provider: @provider)
+        end
+      end
+
+      def build_status_callback
+        lambda do |event, name|
+          case event
+          when :tool_start
+            label = name == "web_research" ? "Searching the web..." : "Running #{name}..."
+            @activity_indicator&.update(label)
+          when :tool_end
+            @activity_indicator&.update("Processing results...")
+          end
+        end
       end
 
       def build_memory_store
@@ -281,7 +340,14 @@ module Homunculus
         $stdout.write("\e[?1049h") # enter alternate screen
         $stdout.write("\e[?25l")   # hide cursor
         $stdout.flush
-        yield
+
+        # Raw stdin: no echo, no line buffering — so arrow keys send escape sequences
+        # that we can read and handle instead of being echoed as ^[[D etc.
+        if $stdin.respond_to?(:raw)
+          $stdin.raw { yield }
+        else
+          yield
+        end
       ensure
         $stdout.write("\e[?25h")   # show cursor
         $stdout.write("\e[?1049l") # exit alternate screen
@@ -367,36 +433,57 @@ module Homunculus
 
       def render_header
         move_to(1, 1)
-        $stdout.write(paint(horizontal_rule("═"), :bright_blue))
+        $stdout.write(paint(horizontal_rule(Theme::HEADER_TOP_CHAR), :accent))
         move_to(1, 2)
-        date_str   = Time.now.strftime("%Y-%m-%d")
-        title      = " #{AGENT_NAME} — #{@identity_line}"
-        right_info = "#{date_str} "
-        gap        = [term_width - visible_len(title) - visible_len(right_info), 0].max
+        date_str = Time.now.strftime("%A, %b %-d")
+        title_centered = "#{Theme::HEADER_TITLE_FLANK} #{AGENT_NAME} #{Theme::HEADER_TITLE_FLANK}"
+        title_len = visible_len(title_centered)
+        date_len = visible_len(date_str)
+        left_pad = [(term_width - title_len) / 2, 0].max
+        right_pad = [term_width - left_pad - title_len - 1 - date_len, 0].max
         $stdout.write(
-          paint(title, :bold) +
-          (" " * gap) +
-          paint(right_info, :dim)
+          (" " * left_pad) +
+          paint(title_centered, :bold) +
+          (" " * right_pad) +
+          " " +
+          paint(date_str, :muted)
         )
         move_to(1, 3)
-        $stdout.write(paint(horizontal_rule("─"), :dim))
+        tagline = @identity_line.to_s.strip
+        if tagline.empty?
+          $stdout.write(paint(horizontal_rule(Theme::HEADER_BOTTOM_CHAR), :muted))
+        else
+          $stdout.write(paint(" #{tagline}", :muted))
+        end
         $stdout.flush
       end
 
       # ── Chat Panel ─────────────────────────────────────────────────
 
       def render_chat_panel
-        lines = build_chat_lines
+        lines  = build_chat_lines
         total  = lines.length
         window = chat_rows
-        start  = [total - window - @scroll_offset, 0].max
-        slice  = lines[start, window] || []
+        max_scroll = [total - window, 0].max
+        show_above = @scroll_offset < max_scroll && max_scroll.positive?
+        show_below = @scroll_offset.positive?
+        content_rows = window - (show_above ? 1 : 0) - (show_below ? 1 : 0)
+        start = [total - content_rows - @scroll_offset, 0].max
+        slice = lines[start, content_rows] || []
 
-        (0...window).each do |i|
-          row = HEADER_ROWS + 1 + i
+        (0...window).each do |r|
+          row = HEADER_ROWS + 1 + r
           move_to(1, row)
           clear_line
-          $stdout.write(slice[i] || "")
+          line_str = if r.zero? && show_above
+                       paint("▲ more above", :muted)
+                     elsif r == window - 1 && show_below
+                       paint("▼ more below", :muted)
+                     else
+                       idx = r - (show_above ? 1 : 0)
+                       slice[idx] || ""
+                     end
+          $stdout.write(line_str)
         end
         $stdout.flush
       end
@@ -407,64 +494,56 @@ module Homunculus
 
       def build_chat_lines
         w = inner_width
-        all_lines = []
-        @messages.each do |msg|
-          all_lines.concat(render_message(msg, w))
-          all_lines << ""
-        end
-        all_lines
-      end
+        return @overlay_content.flat_map { |line| wrap_plain_line(line, w) }.map { |l| paint(l, :muted) } if @overlay_content
 
-      def render_message(msg, width)
-        role  = msg[:role]
-        text  = msg[:text].to_s
-        label = role_label(role)
-        color = ROLE_COLORS.fetch(role, :white)
-        prefix_plain = "#{label}: "
-        indent       = " " * visible_len(prefix_plain)
-
-        lines = []
-        text.split("\n").each_with_index do |para, para_idx|
-          words = para.split
-          current_line = para_idx.zero? ? prefix_plain : indent
-          words.each do |word|
-            if visible_len(current_line) + visible_len(word) + 1 > width
-              lines << paint_role_line(current_line, color, para_idx.zero? && lines.empty?)
-              current_line = indent + word
-            else
-              current_line += (current_line == indent || current_line == prefix_plain ? "" : " ") + word
+        renderer = TUI::MessageRenderer.new(width: w, agent_name: @agent_name)
+        @messages_mutex.synchronize do
+          all_lines = []
+          prev_role = nil
+          prev_date = nil
+          @messages.each do |msg|
+            msg_date = msg[:timestamp] ? msg[:timestamp].to_date : nil
+            if prev_date && msg_date && prev_date != msg_date
+              all_lines << paint(date_separator_line(msg[:timestamp], w), :muted)
             end
+            if prev_role && prev_role != msg[:role]
+              all_lines << paint(turn_separator_line(w), :muted)
+            end
+            all_lines.concat(renderer.render(msg))
+            all_lines << ""
+            prev_role = msg[:role]
+            prev_date = msg_date
           end
-          lines << paint_role_line(current_line, color, para_idx.zero? && lines.empty?) unless current_line.strip.empty?
+          all_lines
         end
-        lines.empty? ? [paint_role_line(prefix_plain, color, true)] : lines
       end
 
-      def paint_role_line(line, color, is_label_line)
-        return line if line.strip.empty?
+      def turn_separator_line(width)
+        seg = Theme::TURN_SEPARATOR + " "
+        (seg * ((width / seg.length) + 1))[0, width]
+      end
 
-        if is_label_line
-          label_end = line.index(": ")
-          if label_end
-            label_part = line[0..(label_end + 1)]
-            rest_part  = line[(label_end + 2)..]
-            paint(label_part, color, :bold) + paint(rest_part.to_s, :reset)
+      def date_separator_line(ts, width)
+        str = "── #{ts.strftime('%B %d, %Y')} ──"
+        pad = [width - visible_len(str), 0].max
+        " " * (pad / 2) + str + " " * (pad - pad / 2)
+      end
+
+      def wrap_plain_line(text, width)
+        words = text.to_s.split
+        lines = []
+        current = +""
+        words.each do |word|
+          if visible_len(current) + visible_len(word) + 1 > width
+            lines << current.strip.dup unless current.strip.empty?
+            current = +""
           else
-            paint(line, color)
+            current << " " unless current.empty?
           end
-        else
-          paint(line, :reset)
+          current << word
         end
-      end
-
-      def role_label(role)
-        case role
-        when :user      then "You"
-        when :assistant then AGENT_NAME
-        when :system    then "System"
-        when :error     then "Error"
-        else                 role.to_s.capitalize
-        end
+        lines << current.strip unless current.strip.empty?
+        lines.empty? ? [""] : lines
       end
 
       # ── Status Bar ─────────────────────────────────────────────────
@@ -472,7 +551,7 @@ module Homunculus
       def render_status_bar
         row = HEADER_ROWS + chat_rows + 1
         move_to(1, row)
-        clear_line
+        # Overwrite in place (content is padded to term_width). Avoid clear_line to reduce blink.
         $stdout.write(status_bar_content)
         $stdout.flush
       end
@@ -482,32 +561,105 @@ module Homunculus
       end
 
       def status_bar_content
-        parts = [
-          model_tier_label,
-          token_usage_label,
-          turn_label,
-          session_status_label
-        ]
-        bar = " #{parts.compact.join("  |  ")}"
-        pad = [term_width - visible_len(bar), 0].max
-        paint(bar + (" " * pad), :reverse)
+        status_part = if @activity_indicator&.running?
+                        "#{@activity_indicator.frame_char} #{@activity_indicator.message}"
+                      elsif @session&.pending_tool_call
+                        "⚠ awaiting confirm"
+                      elsif @scroll_offset.positive?
+                        "↕ scrolled"
+                      else
+                        session_status_label
+                      end
+        sep = Theme::STATUS_SEP
+        model_short = status_bar_model_label
+        model_style = model_tier_style
+        sections = [
+          model_short ? "#{Theme::ROLE_ASSISTANT} #{model_short}" : nil,
+          token_usage_label ? "#{token_usage_label} tokens" : nil,
+          turn_label ? turn_label.sub(/\Aturns: /, "turn ") : nil,
+          elapsed_session_time,
+          status_part
+        ].compact
+        raw = sections.join(sep)
+        pad = [term_width - visible_len(" #{raw} "), 0].max
+        out = " "
+        sections.each_with_index do |s, i|
+          out += paint(sep, :muted) if i.positive?
+          if i == 0 && model_style
+            out += paint(s, model_style)
+          elsif i == sections.length - 1 && @session&.pending_tool_call
+            out += paint(s, :accent)
+          else
+            out += paint(s, :muted)
+          end
+        end
+        out + (" " * pad) + " "
+      end
+
+      def elapsed_session_time
+        return nil unless @session_start_time
+
+        elapsed = (Time.now - @session_start_time).to_i
+        if elapsed >= 3600
+          h = elapsed / 3600
+          m = (elapsed % 3600) / 60
+          "#{h}h #{m}m"
+        else
+          m = elapsed / 60
+          s = elapsed % 60
+          "#{m}m #{s}s"
+        end
+      end
+
+      def status_bar_model_label
+        base = if @current_tier && @current_model
+                 @current_tier.to_s
+               elsif use_models_router?
+                 "router"
+               else
+                 @provider_name.to_s
+               end
+        @current_escalated_from ? "#{base} ⚡ escalated from #{@current_escalated_from}" : base
       end
 
       def model_tier_label
-        tier = if use_models_router?
-                 "router"
-               else
-                 @provider_name
-               end
-        "model: #{tier}"
+        if @current_tier && @current_model
+          label = "model: #{@current_tier} (#{@current_model})"
+          label += " ⚡ escalated from #{@current_escalated_from}" if @current_escalated_from
+          label
+        elsif use_models_router?
+          "model: router"
+        else
+          "model: #{@provider_name}"
+        end
+      end
+
+      # Style for the model segment: :green (local), :yellow (cloud), :bg_red (escalated).
+      def model_tier_style
+        return nil unless @current_tier
+
+        return :bg_red if @current_escalated_from
+        return :yellow if cloud_tier?(@current_tier)
+
+        :green
+      end
+
+      def cloud_tier?(tier_name)
+        tier_name.to_s.start_with?("cloud_")
       end
 
       def token_usage_label
         return nil unless @session
 
-        in_t  = @session.total_input_tokens
+        in_t = @session.total_input_tokens
         out_t = @session.total_output_tokens
-        "tokens: #{in_t}↓ #{out_t}↑"
+        estimate = @messages_mutex.synchronize { @streaming_output_tokens_estimate }
+        if estimate&.positive?
+          live_out = out_t + estimate
+          "tokens: #{in_t}↓ #{live_out}↑ (+#{estimate}⚡)"
+        else
+          "tokens: #{in_t}↓ #{out_t}↑"
+        end
       end
 
       def turn_label
@@ -525,22 +677,121 @@ module Homunculus
 
       # ── Input Line ─────────────────────────────────────────────────
 
-      def render_input_line(input_text = "")
+      def update_suggestion_lines(input_buffer)
+        buf_str = input_buffer.respond_to?(:to_s) ? input_buffer.to_s : input_buffer.to_str
+        if buf_str.start_with?("/")
+          @suggestion_lines = @command_registry.suggestions_with_descriptions(buf_str)
+          @suggestion_prefix = buf_str
+        else
+          @suggestion_lines = nil
+          @suggestion_prefix = nil
+        end
+      end
+
+      # Completes input_buffer to the first suggestion when buffer starts with / and is a prefix. Returns true if completion was applied.
+      def apply_tab_completion(input_buffer)
+        buf_str = input_buffer.to_s
+        return false unless buf_str.start_with?("/") && @suggestion_lines&.any?
+
+        top = @suggestion_lines.first
+        top_cmd = top.is_a?(Hash) ? top[:command] : top
+        return false unless top_cmd && (buf_str == top_cmd || top_cmd.start_with?(buf_str))
+
+        input_buffer.clear
+        top_cmd.each_char { |c| input_buffer.insert(c) }
+        update_suggestion_lines(input_buffer)
+        true
+      end
+
+      # No args: empty line + hide cursor. With input_buffer: draw text + show cursor. Legacy: (text, cursor).
+      def render_input_line(input_buffer_or_text = nil, cursor_pos = nil)
         status_row = HEADER_ROWS + chat_rows + 1
-        move_to(1, status_row + 1)
+        input_row  = status_row + 2
+        suggestion_entries = @suggestion_lines&.any? ? @suggestion_lines.first(5) : []
+
+        # Only redraw separator line on full refresh (nil). During typing it never changes — avoids blink.
+        if input_buffer_or_text.nil?
+          move_to(1, status_row + 1)
+          clear_line
+          $stdout.write(paint(horizontal_rule(Theme::SEPARATOR_CHAR), :muted))
+        end
+
+        if suggestion_entries.any?
+          prefix = @suggestion_prefix.to_s
+          suggestion_entries.each_with_index do |entry, i|
+            move_to(1, input_row - 1 - i)
+            clear_line
+            cmd = entry.is_a?(Hash) ? entry[:command] : entry
+            desc = entry.is_a?(Hash) ? entry[:description] : nil
+            line_str = desc ? "#{cmd} — #{desc}" : cmd.to_s
+            if prefix.empty? || !cmd.to_s.start_with?(prefix)
+              $stdout.write(paint(line_str, :muted))
+            else
+              $stdout.write(paint(cmd.to_s[0, prefix.length], :accent))
+              $stdout.write(paint((cmd.to_s[prefix.length..] || "") + (desc ? " — #{desc}" : ""), :muted))
+            end
+          end
+        else
+          # Clear suggestion rows when not showing suggestions so stale "/confirm" etc. doesn't persist
+          (0..4).each do |i|
+            move_to(1, input_row - 1 - i)
+            clear_line
+          end
+          # Restore the grey separator line above input (same row as first suggestion slot)
+          move_to(1, status_row + 1)
+          $stdout.write(paint(horizontal_rule(Theme::SEPARATOR_CHAR), :muted))
+        end
+
+        move_to(1, input_row)
         clear_line
-        $stdout.write(paint(horizontal_rule("─"), :dim))
-        move_to(1, status_row + 2)
-        clear_line
-        prompt = paint("> ", :cyan, :bold)
-        $stdout.write(prompt + input_text)
+        if input_buffer_or_text.nil?
+          $stdout.write("\e[?25l")
+          prompt = paint("#{Theme::PROMPT_CHAR} ", :user, :bold)
+          $stdout.write(prompt)
+          $stdout.write(paint("Type a message...", :muted))
+        else
+          text, cursor = if input_buffer_or_text.respond_to?(:cursor)
+                           [input_buffer_or_text.to_s, input_buffer_or_text.cursor]
+                         else
+                           t = input_buffer_or_text.to_s
+                           p = cursor_pos.nil? ? t.length : cursor_pos
+                           [t, p.clamp(0, t.length)]
+                         end
+          $stdout.write("\e[?25h")
+          prompt = paint("#{Theme::PROMPT_CHAR} ", :user, :bold)
+          prompt_len = visible_len("#{Theme::PROMPT_CHAR} ")
+          display_text = text
+          display_text = nil if text.empty? # show placeholder below
+          text_len = visible_len(display_text || "")
+          char_count_str = (text.length > 100 ? " #{text.length} chars" : "")
+          char_count_visible = char_count_str.length
+          if display_text.nil?
+            $stdout.write(prompt)
+            $stdout.write(paint("Type a message...", :muted))
+            col = 1 + prompt_len
+          elsif char_count_visible.positive? && (prompt_len + text_len + char_count_visible <= term_width)
+            $stdout.write(prompt + display_text)
+            pad = term_width - prompt_len - text_len - char_count_visible
+            $stdout.write(" " * pad) if pad.positive?
+            $stdout.write(paint(char_count_str, :muted))
+            col = 1 + prompt_len + (visible_len(text[0, cursor]) || 0)
+          else
+            $stdout.write(prompt + display_text)
+            col = 1 + prompt_len + (visible_len(text[0, cursor]) || 0)
+          end
+          $stdout.write("\e[#{input_row};#{col}H")
+        end
         $stdout.flush
       end
 
       # ── Input Loop ─────────────────────────────────────────────────
 
       def input_loop
-        push_info_message("Type 'help' for commands. Ctrl+C to exit.")
+        # Warm time-aware greeting as first assistant message; session context as info.
+        @messages_mutex.synchronize do
+          @messages << { role: :assistant, text: warm_greeting_text, timestamp: Time.now }
+          @messages << { role: :info, text: session_context_line, timestamp: Time.now }
+        end
         refresh_all
 
         while @running
@@ -549,12 +800,15 @@ module Homunculus
           break if input.nil?
 
           input = input.scrub.strip
+          had_overlay = !@overlay_content.nil?
+          @overlay_content = nil
+          refresh_all if had_overlay
           process_input(input)
         end
       end
 
       def read_line
-        buf = +""
+        input_buffer = TUI::InputBuffer.new
         while @running
           begin
             char = $stdin.read_nonblock(1)
@@ -567,28 +821,77 @@ module Homunculus
 
           case char
           when "\r", "\n"
-            return buf
+            return input_buffer.to_s
           when "\x03" # Ctrl+C
             @running = false
             return nil
-          when "\x7f", "\b" # backspace / delete
-            buf = buf[0..-2] || ""
-            render_input_line(buf)
+          when "\t" # Tab — complete to top suggestion when buffer starts with /
+            apply_tab_completion(input_buffer)
+            render_input_line(input_buffer)
+          when "\x01" # Ctrl+A — home
+            input_buffer.move_home
+            update_suggestion_lines(input_buffer)
+            render_input_line(input_buffer)
+          when "\x05" # Ctrl+E — end
+            input_buffer.move_end
+            render_input_line(input_buffer)
+          when "\x15" # Ctrl+U — clear input line
+            input_buffer.clear
+            update_suggestion_lines(input_buffer)
+            render_input_line(input_buffer)
+          when "\x0C" # Ctrl+L — redraw screen
+            refresh_all
+            render_input_line(input_buffer)
+          when "\x17" # Ctrl+W — delete word backward
+            input_buffer.delete_word_backward
+            update_suggestion_lines(input_buffer)
+            render_input_line(input_buffer)
+          when "\x7f", "\b" # backspace
+            input_buffer.backspace
+            update_suggestion_lines(input_buffer)
+            render_input_line(input_buffer)
           when "\x1b" # escape sequences (arrow keys etc.)
-            consume_escape_sequence
+            consume_escape_sequence(input_buffer)
+            render_input_line(input_buffer)
           else
-            buf << char if char.ord >= 32
-            render_input_line(buf)
+            input_buffer.insert(char) if char.ord >= 32
+            update_suggestion_lines(input_buffer)
+            render_input_line(input_buffer)
           end
         end
         nil
       end
 
-      def consume_escape_sequence
+      def consume_escape_sequence(input_buffer)
+        @suggestion_lines = nil
+        seq = read_escape_sequence
+        case seq
+        when "[D" then apply_cursor_action(input_buffer, :move_left)
+        when "[C" then apply_cursor_action(input_buffer, :move_right)
+        when "[H" then apply_cursor_action(input_buffer, :move_home)
+        when "[F" then apply_cursor_action(input_buffer, :move_end)
+        when "[1;5C" then apply_cursor_action(input_buffer, :move_word_right)
+        when "[1;5D" then apply_cursor_action(input_buffer, :move_word_left)
+        when "[A", "[1;2A", "[B", "[1;2B", "[5~", "[6~"
+          handle_scroll_keys(seq)
+        end
+      end
+
+      # Read the rest of an escape sequence after \e. Waits briefly so we don't leave bytes in the buffer.
+      def read_escape_sequence
         seq = $stdin.read_nonblock(8)
-        handle_scroll_keys(seq)
+        seq
       rescue IO::WaitReadable
-        nil
+        $stdin.wait_readable(0.1)
+        seq = $stdin.read_nonblock(8)
+        seq
+      rescue EOFError
+        ""
+      end
+
+      def apply_cursor_action(input_buffer, method_name)
+        input_buffer.public_send(method_name)
+        render_input_line(input_buffer)
       end
 
       def handle_scroll_keys(seq)
@@ -612,10 +915,27 @@ module Homunculus
       end
 
       def process_input(input)
-        case input.downcase
+        @overlay_content = nil
+        stripped = input.to_s.strip
+
+        if stripped.start_with?("/")
+          cmd_key = @command_registry.match(stripped)
+          if cmd_key
+            dispatch_slash_command(cmd_key)
+          else
+            @overlay_content = ["Unknown command. Type /help for available commands."]
+            refresh_all
+          end
+          return
+        end
+
+        # Bare-word dispatch (backward compatibility)
+        case stripped.downcase
         when "", nil
           nil
         when "exit", "quit", ":q"
+          push_info_message("Shutting down...")
+          refresh_all
           @running = false
         when "help"
           show_help
@@ -626,11 +946,30 @@ module Homunculus
         when "deny"
           handle_deny
         when "clear"
-          @messages.clear
+          @messages_mutex.synchronize { @messages.clear }
           @scroll_offset = 0
           refresh_all
         else
           handle_message(input)
+        end
+      end
+
+      def dispatch_slash_command(cmd_key)
+        handler = TUI::CommandRegistry::COMMANDS[cmd_key][:handler]
+        case handler
+        when :show_help then show_help
+        when :show_status then show_status
+        when :clear
+          @messages_mutex.synchronize { @messages.clear }
+          @scroll_offset = 0
+          refresh_all
+        when :confirm then handle_confirm
+        when :deny then handle_deny
+        when :show_model then show_model
+        when :quit
+          push_info_message("Shutting down...")
+          refresh_all
+          @running = false
         end
       end
 
@@ -646,17 +985,69 @@ module Homunculus
         push_user_message(message)
         refresh_all
 
-        @streaming_buf = nil
+        @messages_mutex.synchronize do
+          @streaming_buf = nil
+          @streaming_output_tokens_estimate = nil
+        end
         logger.info("TUI input", length: message.length, session_id: @session.id)
 
-        result = @agent_loop.run(message, @session)
-        @streaming_buf = nil
+        @activity_indicator.start("Thinking...")
+        agent_thread = Thread.new { @agent_loop.run(message, @session) }
+        wait_for_agent_with_scroll(agent_thread)
+        return unless @running
+
+        agent_thread.join
+        result = agent_thread.value
+        @messages_mutex.synchronize do
+          @streaming_buf = nil
+          @streaming_output_tokens_estimate = nil
+        end
         @scroll_offset = 0
         display_result(result)
       rescue StandardError => e
         logger.error("Error processing message", error: e.message)
         push_error_message("Error: #{e.message}")
         refresh_all
+      ensure
+        @activity_indicator&.stop
+        @messages_mutex.synchronize do
+          @streaming_buf = nil
+          @streaming_output_tokens_estimate = nil
+        end
+      end
+
+      # During agent execution: process only scroll keys and Ctrl+C; ignore other input.
+      def wait_for_agent_with_scroll(agent_thread)
+        while agent_thread.alive?
+          break unless @running
+
+          read_scroll_or_interrupt
+        end
+      end
+
+      # Returns true if caller should stop waiting (e.g. Ctrl+C).
+      def read_scroll_or_interrupt
+        $stdin.wait_readable(0.05)
+        char = $stdin.read_nonblock(1)
+        case char
+        when "\x03" # Ctrl+C
+          @running = false
+        when "\e"
+          consume_escape_sequence_scroll_only
+        end
+        # Ignore other keys (no input_buffer in scroll-only mode)
+      rescue IO::WaitReadable
+        nil
+      rescue EOFError
+        @running = false
+      end
+
+      def consume_escape_sequence_scroll_only
+        seq = read_escape_sequence
+        case seq
+        when "[A", "[1;2A", "[B", "[1;2B", "[5~", "[6~"
+          handle_scroll_keys(seq)
+        end
       end
 
       def handle_confirm
@@ -665,9 +1056,13 @@ module Homunculus
           refresh_all
           return
         end
-        push_info_message("Confirmed.")
+        tool_name = @session.pending_tool_call.name
         result = @agent_loop.confirm_tool(@session)
-        @streaming_buf = nil
+        push_info_message("✓ #{tool_name} completed")
+        @messages_mutex.synchronize do
+          @streaming_buf = nil
+          @streaming_output_tokens_estimate = nil
+        end
         @scroll_offset = 0
         display_result(result)
       rescue StandardError => e
@@ -681,9 +1076,12 @@ module Homunculus
           refresh_all
           return
         end
-        push_info_message("Denied.")
         result = @agent_loop.deny_tool(@session)
-        @streaming_buf = nil
+        push_info_message("Denied.")
+        @messages_mutex.synchronize do
+          @streaming_buf = nil
+          @streaming_output_tokens_estimate = nil
+        end
         @scroll_offset = 0
         display_result(result)
       rescue StandardError => e
@@ -694,14 +1092,23 @@ module Homunculus
       def display_result(result)
         case result.status
         when :completed
+          if result.respond_to?(:tier) && result.tier
+            @current_tier = result.tier
+            @current_model = result.model
+            @current_escalated_from = result.escalated_from
+          end
           # Non-streaming mode: push assistant message
           push_assistant_message(result.response) unless use_models_router?
         when :pending_confirmation
           tc = result.pending_tool_call
-          push_info_message(
-            "Tool call requires confirmation: #{tc.name} — args: #{tc.arguments.inspect}\n" \
-            "Type 'confirm' to proceed or 'deny' to cancel."
-          )
+          @messages_mutex.synchronize do
+            @messages << {
+              role: :tool_request,
+              tool_name: tc.name,
+              arguments: tc.arguments,
+              timestamp: Time.now
+            }
+          end
         when :error
           push_error_message(result.error.to_s)
         end
@@ -711,26 +1118,46 @@ module Homunculus
       # ── Message Queue ──────────────────────────────────────────────
 
       def push_user_message(text)
-        @messages << { role: :user, text: text.to_s }
+        @messages_mutex.synchronize { @messages << { role: :user, text: text.to_s, timestamp: Time.now } }
       end
 
       def push_assistant_message(text)
-        @messages << { role: :assistant, text: text.to_s }
+        @messages_mutex.synchronize { @messages << { role: :assistant, text: text.to_s, timestamp: Time.now } }
       end
 
       def push_info_message(text)
-        @messages << { role: :info, text: text.to_s }
+        @messages_mutex.synchronize { @messages << { role: :info, text: text.to_s, timestamp: Time.now } }
       end
 
       def push_error_message(text)
-        @messages << { role: :error, text: text.to_s }
+        friendly = text.to_s.start_with?("Error:") ? "Hmm, something went wrong: #{text.to_s.sub(/\AError:\s*/, '')}" : text.to_s
+        @messages_mutex.synchronize { @messages << { role: :error, text: friendly, timestamp: Time.now } }
+      end
+
+      def warm_greeting_text
+        hour = Time.now.hour
+        greeting = if hour >= 5 && hour < 12
+                     "Good morning! Ready to help with whatever you need today."
+                   elsif hour >= 12 && hour < 17
+                     "Good afternoon! What are we working on?"
+                   elsif hour >= 17 && hour < 22
+                     "Good evening! How can I help?"
+                   else
+                     "Burning the midnight oil? I'm here when you need me."
+                   end
+        "#{greeting} Type /help for commands, or just start chatting."
+      end
+
+      def session_context_line
+        tier = @current_tier && @current_model ? "#{@current_tier} (#{@current_model})" : (use_models_router? ? "router" : @provider_name.to_s)
+        "Session started · model: #{tier} · /help for commands"
       end
 
       # ── Help & Status Overlays ─────────────────────────────────────
 
       def show_help
         help_text = <<~HELP.strip
-          TUI Commands:
+          Here's what I can do:
             help       — This message
             status     — Session and config details
             confirm    — Approve a pending tool call
@@ -739,8 +1166,9 @@ module Homunculus
             quit / :q  — Exit
           Scroll:
             Arrow Up/Down or Page Up/Down to scroll history
+          Just type naturally — I understand plain language too.
         HELP
-        push_info_message(help_text)
+        @overlay_content = help_text.split("\n")
         refresh_all
       end
 
@@ -758,13 +1186,73 @@ module Homunculus
           Provider: #{@provider_name}
           Workspace:#{@config.agent.workspace_path}
         STATUS
-        push_info_message(status_text)
+        @overlay_content = status_text.split("\n")
         refresh_all
+      end
+
+      def show_model
+        tier_label = model_tier_label.sub(/\Amodel: /, "")
+        mc = use_models_router? ? nil : resolve_model_config
+        model_name = mc ? (mc.default_model || mc.model) : "router"
+        provider   = @provider_name
+
+        lines = [
+          "Model tier: #{tier_label}",
+          "Model:      #{model_name}",
+          "Provider:   #{provider}"
+        ]
+
+        tier_descriptions = load_tier_descriptions_from_models_toml
+        if tier_descriptions.any?
+          lines << ""
+          lines.concat(tier_descriptions)
+        end
+
+        @overlay_content = lines
+        refresh_all
+      end
+
+      # Returns array of "  tier_name — description" lines from config/models.toml, or [].
+      def load_tier_descriptions_from_models_toml
+        return [] unless File.file?(models_toml_path)
+
+        toml = TomlRB.load_file(models_toml_path)
+        tiers = toml["tiers"] || {}
+        tiers.map do |name, cfg|
+          desc = cfg.is_a?(Hash) ? (cfg["description"] || "") : ""
+          "  #{name} — #{desc}".strip
+        end.reject { |line| line.end_with?(" — ") }
       end
 
       # ── Shutdown ───────────────────────────────────────────────────
 
+      def format_int(n)
+        n.to_s.gsub(/(\d)(?=(\d{3})+(?!\d))/, '\\1,')
+      end
+
+      def print_session_summary
+        return unless @session && @session_start_time
+
+        elapsed = (Time.now - @session_start_time).to_i
+        duration_str = elapsed >= 3600 ? "#{elapsed / 3600}h #{(elapsed % 3600) / 60}m" : "#{elapsed / 60}m #{elapsed % 60}s"
+        turns = "#{@session.turn_count}/#{@config.agent.max_turns}"
+        in_t = @session.total_input_tokens
+        out_t = @session.total_output_tokens
+        token_str = "#{format_int(in_t)}↓ #{format_int(out_t)}↑"
+        tool_count = @messages_mutex.synchronize { @messages.count { |m| m[:role] == :tool_request } }
+        memory_line = (@memory_store && @session.turn_count.positive?) ? "Memory saved. " : ""
+        lines = [
+          "Session complete.",
+          "Duration: #{duration_str} · Turns: #{turns} · Tokens: #{token_str}",
+          (tool_count.positive? ? "Tools used: #{tool_count}. " : "") + "#{memory_line}See you next time!"
+        ]
+        $stdout.puts
+        $stdout.puts(lines.join("\n"))
+        $stdout.flush
+      end
+
       def shutdown
+        @activity_indicator&.stop
         @scheduler_manager&.stop
 
         return unless @session
@@ -784,11 +1272,6 @@ module Homunculus
 
       # ── ANSI / Rendering Helpers ───────────────────────────────────
 
-      def paint(text, *styles)
-        codes = styles.filter_map { |s| ANSI_CODES[s] }.join
-        "#{codes}#{text}#{ANSI_CODES[:reset]}"
-      end
-
       def move_to(col, row)
         $stdout.write("\e[#{row};#{col}H")
       end
@@ -797,13 +1280,8 @@ module Homunculus
         $stdout.write("\e[2K\e[1G")
       end
 
-      def horizontal_rule(char = "─")
+      def horizontal_rule(char = Theme::SEPARATOR_CHAR)
         char * term_width
-      end
-
-      # Compute visible length (strip ANSI escape sequences)
-      def visible_len(str)
-        str.gsub(/\e\[[0-9;]*[mGKHF]/, "").length
       end
     end
   end
