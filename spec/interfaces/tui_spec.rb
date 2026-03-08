@@ -269,6 +269,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
     it "includes model tier" do
       tui = described_class.new(config:)
       tui.instance_variable_set(:@session, Homunculus::Session.new)
+      allow(tui).to receive(:use_models_router?).and_return(true)
       content = tui.send(:status_bar_content)
       expect(tui.send(:visible_len, content)).to be > 0
       expect(content).to include("◆")
@@ -970,6 +971,10 @@ RSpec.describe Homunculus::Interfaces::TUI do
     it "pushes an error message when the agent loop raises" do
       agent_loop = tui.instance_variable_get(:@agent_loop)
       allow(agent_loop).to receive(:run).and_raise(StandardError, "network down")
+      indicator = tui.instance_variable_get(:@activity_indicator)
+      allow(indicator).to receive(:start)
+      allow(indicator).to receive(:stop)
+      allow(Thread).to receive(:new) { |&block| block.call; double("thread", alive?: false, join: nil, value: nil) }
       tui.send(:handle_message, "hello")
       msgs = tui.instance_variable_get(:@messages)
       expect(msgs.any? { |m| m[:role] == :error && m[:text].include?("network down") }).to be true
@@ -978,13 +983,17 @@ RSpec.describe Homunculus::Interfaces::TUI do
     it "runs agent in a background thread so main thread can process scroll (wait loop exits when thread finishes)" do
       agent_loop = tui.instance_variable_get(:@agent_loop)
       session = tui.instance_variable_get(:@session)
-      allow(agent_loop).to receive(:run).and_return(
-        Homunculus::Agent::AgentResult.completed("done", session:)
-      )
+      result = Homunculus::Agent::AgentResult.completed("done", session:)
+      allow(agent_loop).to receive(:run).and_return(result)
+      indicator = tui.instance_variable_get(:@activity_indicator)
+      allow(indicator).to receive(:start)
+      allow(indicator).to receive(:stop)
+      allow(Thread).to receive(:new) do |&block|
+        r = block.call
+        double("thread", alive?: false, join: nil, value: r)
+      end
       tui.send(:handle_message, "ping")
-      expect(tui).to have_received(:display_result).with(
-        Homunculus::Agent::AgentResult.completed("done", session:)
-      )
+      expect(tui).to have_received(:display_result).with(result)
     end
 
     it "starts activity indicator before agent and stops it in ensure (Story 3)" do
