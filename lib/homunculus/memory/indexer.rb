@@ -2,7 +2,6 @@
 
 require "digest"
 require "oj"
-require "pathname"
 require "sequel"
 
 module Homunculus
