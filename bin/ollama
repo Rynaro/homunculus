@@ -1,0 +1,398 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Homunculus Model Store CLI — fleet discovery, pull, remove. Docker-aware.
+# Default: requires host Ruby + toml-rb (bundle install), curl. Optional: Docker for Ollama in container.
+# With BIN_OLLAMA_USE_DOCKER=1 (config/ollama.env): no host Ruby needed; all runs via agent + ollama containers.
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Optional configuration: BIN_OLLAMA_USE_DOCKER=1, OLLAMA_CONTAINER, AGENT_CONTAINER
+[[ -f "$PROJECT_ROOT/config/ollama.env" ]] && source "$PROJECT_ROOT/config/ollama.env"
+# Normalize so "1", "1 ", " 1" or "1" with CRLF all count as enabled
+BIN_OLLAMA_USE_DOCKER="${BIN_OLLAMA_USE_DOCKER:-0}"
+BIN_OLLAMA_USE_DOCKER="${BIN_OLLAMA_USE_DOCKER//[[:space:]]}"
+
+MODELS_TOML="$PROJECT_ROOT/config/models.toml"
+DEFAULT_TOML="$PROJECT_ROOT/config/default.toml"
+OLLAMA_CONTAINER="${OLLAMA_CONTAINER:-homunculus-ollama}"
+AGENT_CONTAINER="${AGENT_CONTAINER:-homunculus-agent}"
+OLLAMA_INSTALLED_IN_WORKSPACE="$PROJECT_ROOT/workspace/.ollama_installed.json"
+
+# Export for Ruby scripts
+export MODELS_TOML DEFAULT_TOML
+
+# When BIN_OLLAMA_USE_DOCKER=1, require agent and ollama containers for commands that need them.
+require_docker_containers() {
+  [[ "${BIN_OLLAMA_USE_DOCKER:-0}" != "1" ]] && return 0
+  if ! docker ps --filter "name=$AGENT_CONTAINER" --filter "status=running" -q 2>/dev/null | grep -q .; then
+    error "BIN_OLLAMA_USE_DOCKER=1 but $AGENT_CONTAINER is not running. Start with: bin/assistant up"
+  fi
+  if ! docker ps --filter "name=$OLLAMA_CONTAINER" --filter "status=running" -q 2>/dev/null | grep -q .; then
+    error "BIN_OLLAMA_USE_DOCKER=1 but $OLLAMA_CONTAINER is not running. Start with: bin/assistant up --with-ollama"
+  fi
+}
+
+# If not already using Docker, probe host Ruby; if missing, set BIN_OLLAMA_USE_DOCKER=1 in this shell
+# so that later $(get_fleet_json) and ruby one-liners use Docker. Must run in main shell (not in a subshell).
+ensure_ruby_or_docker() {
+  [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]] && return 0
+  if host_ruby_available; then
+    return 0
+  fi
+  warn "Host Ruby not available (e.g. .ruby-version not installed). Using Docker mode."
+  BIN_OLLAMA_USE_DOCKER=1
+  require_docker_containers
+}
+
+# Detect Ollama: when BIN_OLLAMA_USE_DOCKER=1 only try Docker; else host first, then docker.
+# Sets OLLAMA_VIA_DOCKER=1 and writes installed JSON to OLLAMA_INSTALLED_FILE.
+# When USE_DOCKER=1 also writes to workspace/.ollama_installed.json for container Ruby.
+# Returns 0 if we got installed list, 1 if unreachable.
+ensure_ollama_installed_json() {
+  OLLAMA_VIA_DOCKER=""
+  OLLAMA_INSTALLED_FILE=""
+  if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" != "1" ]]; then
+    if curl -s -f --connect-timeout 2 -o /dev/null -w "%{http_code}" "http://127.0.0.1:11434/api/tags" 2>/dev/null | grep -q 200; then
+      OLLAMA_INSTALLED_FILE=$(mktemp)
+      curl -s "http://127.0.0.1:11434/api/tags" > "$OLLAMA_INSTALLED_FILE"
+      return 0
+    fi
+  fi
+  if docker ps --filter "name=$OLLAMA_CONTAINER" --filter "status=running" -q 2>/dev/null | grep -q .; then
+    OLLAMA_VIA_DOCKER=1
+    OLLAMA_INSTALLED_FILE=$(mktemp)
+    # Neither image has curl; use agent container's Ruby (Net::HTTP) to hit ollama:11434 when agent is running
+    if docker ps --filter "name=$AGENT_CONTAINER" --filter "status=running" -q 2>/dev/null | grep -q .; then
+      docker exec "$AGENT_CONTAINER" ruby -r net/http -r uri -e 'u=URI("http://ollama:11434/api/tags"); r=Net::HTTP.get_response(u); puts r.body if r.is_a?(Net::HTTPSuccess)' > "$OLLAMA_INSTALLED_FILE" 2>/dev/null || true
+    else
+      docker exec "$OLLAMA_CONTAINER" ruby -r net/http -r uri -e 'u=URI("http://127.0.0.1:11434/api/tags"); r=Net::HTTP.get_response(u); puts r.body if r.is_a?(Net::HTTPSuccess)' > "$OLLAMA_INSTALLED_FILE" 2>/dev/null || true
+    fi
+    if [[ -s "$OLLAMA_INSTALLED_FILE" ]] && [[ "$(head -c1 "$OLLAMA_INSTALLED_FILE")" == "{" ]]; then
+      if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+        mkdir -p "$PROJECT_ROOT/workspace"
+        cp "$OLLAMA_INSTALLED_FILE" "$OLLAMA_INSTALLED_IN_WORKSPACE"
+      fi
+      return 0
+    fi
+    rm -f "$OLLAMA_INSTALLED_FILE"
+  fi
+  return 1
+}
+
+ollama_cmd() {
+  if [[ -n "${OLLAMA_VIA_DOCKER:-}" ]]; then
+    docker exec "$OLLAMA_CONTAINER" ollama "$@"
+  else
+    command ollama "$@"
+  fi
+}
+
+ollama_pull_cmd() {
+  local model="$1"
+  if [[ -n "${OLLAMA_VIA_DOCKER:-}" ]]; then
+    docker exec -it "$OLLAMA_CONTAINER" ollama pull "$model"
+  else
+    ollama pull "$model"
+  fi
+}
+
+ollama_rm_cmd() {
+  local model="$1"
+  if [[ -n "${OLLAMA_VIA_DOCKER:-}" ]]; then
+    docker exec "$OLLAMA_CONTAINER" ollama rm "$model"
+  else
+    ollama rm "$model"
+  fi
+}
+
+# Returns 0 if host Ruby (bundle exec in project) works; 1 otherwise (e.g. rbenv version not installed).
+host_ruby_available() {
+  (cd "$PROJECT_ROOT" && bundle exec ruby -e "exit 0") 2>/dev/null
+}
+
+get_fleet_json() {
+  if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+    docker exec "$AGENT_CONTAINER" bash -c 'MODELS_TOML=/app/config/models.toml DEFAULT_TOML=/app/config/default.toml bundle exec ruby /app/bin/ollama_fleet_parser.rb'
+  else
+    cd "$PROJECT_ROOT" && bundle exec ruby bin/ollama_fleet_parser.rb
+  fi
+}
+
+# Outputs the model name for the given tier (stdin = fleet JSON). Pass tier as first argument.
+tier_to_model() {
+  local tier="$1"
+  if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+    docker exec -i "$AGENT_CONTAINER" ruby -r json -e "t=ARGV[0]; f=JSON.parse(STDIN.read); e=f.find{|x|x['tier']==t}; puts e['model'] if e" "$tier"
+  else
+    ruby -r json -e "t=ARGV[0]; f=JSON.parse(STDIN.read); e=f.find{|x|x['tier']==t}; puts e['model'] if e" "$tier"
+  fi
+}
+
+# Outputs missing model names, one per line (stdin = fleet JSON, INSTALLED_JSON env).
+# When USE_DOCKER=1, INSTALLED_JSON must be /app/workspace/.ollama_installed.json (caller ensures file exists).
+missing_models() {
+  if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+    docker exec -i -e INSTALLED_JSON=/app/workspace/.ollama_installed.json "$AGENT_CONTAINER" ruby -r json -e "
+      fleet = JSON.parse(STDIN.read)
+      inst = File.file?(ENV['INSTALLED_JSON'].to_s) ? JSON.parse(File.read(ENV['INSTALLED_JSON'])) : {'models'=>[]}
+      names = (inst['models']||[]).map{|m| m['name']}.to_set
+      fleet.each { |e| puts e['model'] unless names.include?(e['model']) }
+    "
+  else
+    ruby -r json -e "
+      fleet = JSON.parse(STDIN.read)
+      inst = File.file?(ENV['INSTALLED_JSON'].to_s) ? JSON.parse(File.read(ENV['INSTALLED_JSON'])) : {'models'=>[]}
+      names = (inst['models']||[]).map{|m| m['name']}.to_set
+      fleet.each { |e| puts e['model'] unless names.include?(e['model']) }
+    "
+  fi
+}
+
+cmd_list() {
+  ensure_ruby_or_docker
+  require_docker_containers
+  local fleet_json installed_file
+  fleet_json=$(get_fleet_json)
+  if ! ensure_ollama_installed_json; then
+    warn "Ollama is not reachable (tried 127.0.0.1:11434 and docker $OLLAMA_CONTAINER)."
+    echo "  Start Ollama or run: bin/assistant up --with-ollama"
+    echo ""
+    if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+      echo "$fleet_json" | docker exec -i -e INSTALLED_JSON= "$AGENT_CONTAINER" bundle exec ruby /app/bin/ollama_list_table.rb 2>/dev/null || true
+    else
+      echo "$fleet_json" | INSTALLED_JSON="" "$PROJECT_ROOT/bin/ollama_list_table.rb" 2>/dev/null || true
+    fi
+    exit 1
+  fi
+  echo "🏪 Homunculus Model Store"
+  echo "══════════════════════════════════════════════════════════════════"
+  echo ""
+  if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+    echo "$fleet_json" | docker exec -i -e INSTALLED_JSON=/app/workspace/.ollama_installed.json "$AGENT_CONTAINER" bundle exec ruby /app/bin/ollama_list_table.rb
+  else
+    echo "$fleet_json" | INSTALLED_JSON="$OLLAMA_INSTALLED_FILE" bundle exec ruby "$PROJECT_ROOT/bin/ollama_list_table.rb"
+  fi
+  rm -f "$OLLAMA_INSTALLED_FILE"
+  [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]] && rm -f "$OLLAMA_INSTALLED_IN_WORKSPACE"
+}
+
+cmd_status() {
+  ensure_ruby_or_docker
+  require_docker_containers
+  echo "Ollama — Status"
+  echo "==============="
+  if ensure_ollama_installed_json; then
+    if [[ -n "${OLLAMA_VIA_DOCKER:-}" ]]; then
+      info "Ollama reachable via Docker container: $OLLAMA_CONTAINER"
+    else
+      info "Ollama reachable at 127.0.0.1:11434"
+    fi
+    local fleet_json total expected
+    fleet_json=$(get_fleet_json)
+    if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+      expected=$(echo "$fleet_json" | docker exec -i "$AGENT_CONTAINER" ruby -r json -e "puts JSON.parse(STDIN.read).size")
+      total=$(docker exec -e OLLAMA_INSTALLED_FILE=/app/workspace/.ollama_installed.json "$AGENT_CONTAINER" ruby -r json -e "begin; d=JSON.parse(File.read(ENV['OLLAMA_INSTALLED_FILE'])); puts (d['models']||[]).size; rescue; puts 0; end")
+    else
+      expected=$(echo "$fleet_json" | ruby -r json -e "puts JSON.parse(STDIN.read).size")
+      total=$(ruby -r json -e "begin; d=JSON.parse(File.read(ENV['OLLAMA_INSTALLED_FILE'])); puts (d['models']||[]).size; rescue; puts 0; end")
+    fi
+    echo "  Fleet: $total/$expected models installed (fleet-only view)."
+    rm -f "$OLLAMA_INSTALLED_FILE"
+    [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]] && rm -f "$OLLAMA_INSTALLED_IN_WORKSPACE"
+  else
+    echo -e "  ${RED}✗${NC} Ollama not reachable. Start Ollama or: bin/assistant up --with-ollama"
+    exit 1
+  fi
+}
+
+cmd_help() {
+  cat <<EOF
+Usage: bin/ollama [command] [args]
+
+Model store (fleet from config/models.toml + embedding from config/default.toml):
+
+  list                Show fleet models with install status (default)
+  status              Ollama reachability and fleet summary
+
+Install / remove:
+
+  pull <tier>         Pull the model for a tier (e.g. whisper, workhorse, coder, thinker, embedding)
+  pull --all          Pull all missing fleet models
+  remove <tier>       Remove a tier's model (with confirmation)
+
+Info:
+
+  help                Show this help
+
+Configuration (optional): config/ollama.env (copy from config/ollama.env.example)
+  BIN_OLLAMA_USE_DOCKER=1  — Run all Ollama and Ruby via Docker (no host Ruby/Ollama needed).
+                            Requires: bin/assistant up --with-ollama (agent + ollama containers).
+  OLLAMA_CONTAINER, AGENT_CONTAINER  — Override container names.
+
+Examples:
+  bin/ollama
+  bin/ollama list
+  bin/ollama pull workhorse
+  bin/ollama pull --all
+  bin/ollama remove thinker
+  bin/ollama status
+EOF
+}
+
+cmd_pull() {
+  ensure_ruby_or_docker
+  require_docker_containers
+  local arg="${1:-}"
+  if [[ -z "$arg" ]]; then
+    error "Usage: bin/ollama pull <tier> | bin/ollama pull --all"
+  fi
+  if ! ensure_ollama_installed_json; then
+    if [[ "$arg" == "--all" ]]; then
+      warn "Ollama not reachable. Start Ollama or: bin/assistant up --with-ollama"
+      exit 1
+    fi
+    OLLAMA_VIA_DOCKER=""
+    if docker ps --filter "name=$OLLAMA_CONTAINER" --filter "status=running" -q 2>/dev/null | grep -q .; then
+      OLLAMA_VIA_DOCKER=1
+    fi
+  elif [[ "$arg" != "--all" ]]; then
+    rm -f "$OLLAMA_INSTALLED_FILE"
+  fi
+
+  local fleet_json
+  fleet_json=$(get_fleet_json)
+
+  if [[ "$arg" == "--all" ]]; then
+    [[ -z "${OLLAMA_INSTALLED_FILE:-}" ]] || [[ ! -s "$OLLAMA_INSTALLED_FILE" ]] && error "Ollama not reachable. Cannot pull."
+    export INSTALLED_JSON="$OLLAMA_INSTALLED_FILE"
+    local missing
+    missing=$(echo "$fleet_json" | missing_models)
+    rm -f "$OLLAMA_INSTALLED_FILE"
+    if [[ -z "$missing" ]]; then
+      info "All fleet models already installed."
+      return 0
+    fi
+    while IFS= read -r model; do
+      [[ -z "$model" ]] && continue
+      info "Pulling $model..."
+      ollama_pull_cmd "$model"
+    done <<< "$missing"
+    return 0
+  fi
+
+  local model valid
+  model=$(echo "$fleet_json" | tier_to_model "$arg")
+  if [[ -z "$model" ]]; then
+    if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+      valid=$(echo "$fleet_json" | docker exec -i "$AGENT_CONTAINER" ruby -r json -e "f=JSON.parse(STDIN.read); puts f.map{|x| x['tier']}.join(', ')")
+    else
+      valid=$(echo "$fleet_json" | ruby -r json -e "f=JSON.parse(STDIN.read); puts f.map{|x| x['tier']}.join(', ')")
+    fi
+    error "Unknown tier: $arg. Valid tiers: $valid"
+  fi
+  info "Pulling $model (tier: $arg)..."
+  ollama_pull_cmd "$model"
+}
+
+cmd_remove() {
+  ensure_ruby_or_docker
+  require_docker_containers
+  local tier="${1:-}"
+  if [[ -z "$tier" ]]; then
+    error "Usage: bin/ollama remove <tier>"
+  fi
+  local fleet_json
+  fleet_json=$(get_fleet_json)
+  local model valid
+  model=$(echo "$fleet_json" | tier_to_model "$tier")
+  if [[ -z "$model" ]]; then
+    if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+      valid=$(echo "$fleet_json" | docker exec -i "$AGENT_CONTAINER" ruby -r json -e "f=JSON.parse(STDIN.read); puts f.map{|x| x['tier']}.join(', ')")
+    else
+      valid=$(echo "$fleet_json" | ruby -r json -e "f=JSON.parse(STDIN.read); puts f.map{|x| x['tier']}.join(', ')")
+    fi
+    error "Unknown tier: $tier. Valid tiers: $valid"
+  fi
+
+  if ! ensure_ollama_installed_json; then
+    OLLAMA_VIA_DOCKER=""
+    if docker ps --filter "name=$OLLAMA_CONTAINER" --filter "status=running" -q 2>/dev/null | grep -q .; then
+      OLLAMA_VIA_DOCKER=1
+      OLLAMA_INSTALLED_FILE=$(mktemp)
+      if docker ps --filter "name=$AGENT_CONTAINER" --filter "status=running" -q 2>/dev/null | grep -q .; then
+        docker exec "$AGENT_CONTAINER" ruby -r net/http -r uri -e 'u=URI("http://ollama:11434/api/tags"); r=Net::HTTP.get_response(u); puts r.body if r.is_a?(Net::HTTPSuccess)' > "$OLLAMA_INSTALLED_FILE" 2>/dev/null || true
+      else
+        docker exec "$OLLAMA_CONTAINER" ruby -r net/http -r uri -e 'u=URI("http://127.0.0.1:11434/api/tags"); r=Net::HTTP.get_response(u); puts r.body if r.is_a?(Net::HTTPSuccess)' > "$OLLAMA_INSTALLED_FILE" 2>/dev/null || true
+      fi
+      if [[ -s "$OLLAMA_INSTALLED_FILE" ]] && [[ "$(head -c1 "$OLLAMA_INSTALLED_FILE")" == "{" ]]; then
+        if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+          mkdir -p "$PROJECT_ROOT/workspace"
+          cp "$OLLAMA_INSTALLED_FILE" "$OLLAMA_INSTALLED_IN_WORKSPACE"
+        fi
+      else
+        rm -f "$OLLAMA_INSTALLED_FILE"
+        OLLAMA_INSTALLED_FILE=""
+      fi
+    fi
+  fi
+
+  local size_bytes size_human
+  if [[ -n "${OLLAMA_INSTALLED_FILE:-}" ]] && [[ -s "$OLLAMA_INSTALLED_FILE" ]]; then
+    if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+      [[ -s "$OLLAMA_INSTALLED_IN_WORKSPACE" ]] || cp "$OLLAMA_INSTALLED_FILE" "$OLLAMA_INSTALLED_IN_WORKSPACE"
+      size_bytes=$(docker exec -e INSTALLED_JSON=/app/workspace/.ollama_installed.json -e MODEL="$model" "$AGENT_CONTAINER" ruby -r json -e "d=JSON.parse(File.read(ENV['INSTALLED_JSON'])); m=(d['models']||[]).find{|x|x['name']==ENV['MODEL']}; puts m ? m['size'].to_i : 0")
+    else
+      size_bytes=$(INSTALLED_JSON="$OLLAMA_INSTALLED_FILE" MODEL="$model" ruby -r json -e "d=JSON.parse(File.read(ENV['INSTALLED_JSON'])); m=(d['models']||[]).find{|x|x['name']==ENV['MODEL']}; puts m ? m['size'].to_i : 0")
+    fi
+    if [[ -z "$size_bytes" ]] || [[ "$size_bytes" -eq 0 ]]; then
+      info "Model $model is not installed."
+      rm -f "$OLLAMA_INSTALLED_FILE"
+      [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]] && rm -f "$OLLAMA_INSTALLED_IN_WORKSPACE"
+      return 0
+    fi
+    if [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]]; then
+      size_human=$(docker exec -e SIZE_BYTES="$size_bytes" "$AGENT_CONTAINER" ruby -e "b=ENV['SIZE_BYTES'].to_i; gb=b/(1024.0**3); puts gb>=1 ? \"#{gb.round(1)} GB\" : \"#{(b/(1024.0**2)).round(0)} MB\"")
+    else
+      size_human=$(SIZE_BYTES="$size_bytes" ruby -e "b=ENV['SIZE_BYTES'].to_i; gb=b/(1024.0**3); puts gb>=1 ? \"#{gb.round(1)} GB\" : \"#{(b/(1024.0**2)).round(0)} MB\"")
+    fi
+    rm -f "$OLLAMA_INSTALLED_FILE"
+    [[ "${BIN_OLLAMA_USE_DOCKER:-0}" == "1" ]] && rm -f "$OLLAMA_INSTALLED_IN_WORKSPACE"
+  else
+    info "Model $model is not installed."
+    return 0
+  fi
+
+  echo -n "Remove $model ($size_human)? [y/N] "
+  read -r confirm
+  if [[ "${confirm:-}" =~ ^[yY]$ ]]; then
+    ollama_rm_cmd "$model"
+    info "Removed $model"
+  else
+    info "Cancelled."
+  fi
+}
+
+# ---- Dispatch ----
+
+COMMAND="${1:-list}"
+shift || true
+
+case "$COMMAND" in
+  list)   cmd_list "$@" ;;
+  status) cmd_status "$@" ;;
+  pull)   cmd_pull "$@" ;;
+  remove) cmd_remove "$@" ;;
+  help|--help|-h) cmd_help ;;
+  *)
+    error "Unknown command: $COMMAND. Run 'bin/ollama help' for usage."
+    ;;
+esac

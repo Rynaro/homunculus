@@ -4,6 +4,20 @@ Personal AI agent running on your home server. Privacy-first, security-conscious
 
 ## Quick Start
 
+**Production (recommended):** use `bin/assistant` for a single entrypoint that handles setup, start, recovery, and observability.
+
+```bash
+# First-run setup and start
+chmod +x bin/assistant
+bin/assistant setup
+bin/assistant up --with-ollama
+
+# Or without Ollama in Docker (use host Ollama)
+bin/assistant up
+```
+
+**Alternative (manual):**
+
 ```bash
 # First-run setup
 chmod +x scripts/setup.sh
@@ -17,6 +31,23 @@ bundle exec ruby bin/homunculus serve
 
 # Interactive CLI
 bundle exec ruby bin/homunculus cli
+```
+
+**Assistant commands:** `bin/assistant help` — lifecycle (setup, up, down, restart), recovery (doctor, obliterate), observability (status, logs, validate, shell), and interactive **cli** / **tui** (e.g. `bin/assistant cli`, `bin/assistant tui`).
+
+### Model management
+
+Use **`bin/ollama`** to see which Ollama models Homunculus expects (from `config/models.toml` and the embedding model in `config/default.toml`), which are installed, and to pull or remove them. Works with host Ollama or Ollama in Docker (`bin/assistant up --with-ollama`).
+
+**Without host Ruby:** Copy `config/ollama.env.example` to `config/ollama.env` and set `BIN_OLLAMA_USE_DOCKER=1`. All Ollama and Ruby commands then run via Docker (requires `bin/assistant up --with-ollama`).
+
+```bash
+bin/ollama              # or bin/ollama list — fleet table (Installed/Missing)
+bin/ollama status       # Ollama reachability and fleet summary
+bin/ollama pull <tier>  # e.g. whisper, workhorse, coder, thinker, embedding
+bin/ollama pull --all   # pull all missing fleet models
+bin/ollama remove <tier>
+bin/ollama help
 ```
 
 ## Architecture
@@ -99,6 +130,21 @@ homunculus/
 ├── bin/             # Entry points
 └── scripts/         # Setup and maintenance scripts
 ```
+
+## Docker troubleshooting
+
+If you see an error like `failed to set up container networking: network ... not found`, Docker has a stale reference to a removed network. Use the assistant entrypoint (it runs pre-flight cleanup automatically), or recover manually:
+
+```bash
+# Recommended: use the assistant (runs pre-flight before every up)
+bin/assistant up --with-ollama
+
+# Or nuclear reset then start
+bin/assistant obliterate --confirm
+bin/assistant up --with-ollama
+```
+
+Diagnostics: `bin/assistant doctor`. Manual cleanup: `docker compose down`, `docker rm -f homunculus-ollama 2>/dev/null`, `docker network prune -f`, then `bin/assistant up` again.
 
 ## License
 

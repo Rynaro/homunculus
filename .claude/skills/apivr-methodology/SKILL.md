@@ -204,7 +204,7 @@ EDITOR PASS (implementation):
 - [ ] TASK-2: Extend `Homunculus::Tools::Base` with new tool — IN PROGRESS
 - [ ] TASK-3: Register tool in `lib/homunculus/tools/registry.rb` — BLOCKED (needs TASK-2)
 - [ ] TASK-4: Add spec under `spec/tools/` with WebMock stubs — PENDING
-- [ ] TASK-5: Run `bundle exec rubocop` and `bundle exec rspec` — PENDING
+- [ ] TASK-5: Run `bin/dev lint` and `bin/dev test` — PENDING
 ```
 
 ### Targeted Test Execution
@@ -223,9 +223,9 @@ Run and capture output for ALL of these:
 
 | Check | Tool | Pass Criteria |
 |-------|------|--------------|
-| Linter | `bundle exec rubocop` | Zero new violations; never auto-correct `Metrics/*` |
-| New tests | `bundle exec rspec spec/path/file_spec.rb` | All test anchors from Plan phase pass |
-| Regression | `bundle exec rspec` | No new failures |
+| Linter | `bin/dev lint` | Zero new violations; never auto-correct `Metrics/*` |
+| New tests | `bin/dev test spec/path/file_spec.rb` | All test anchors from Plan phase pass |
+| Regression | `bin/dev test` | No new failures |
 | Coverage | SimpleCov (runs with rspec) | 75% overall / 30% per file; no decrease |
 
 **Decision**:
