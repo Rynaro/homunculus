@@ -28,13 +28,14 @@ module Homunculus
       #   models_router:  Models::Router instance (CLI streaming mode)
       #   stream_callback: Lambda receiving streamed text chunks (models_router mode)
       def initialize(config:, tools:, prompt_builder:, audit:, **routing)
-        @config         = config
-        @router         = routing[:router]
-        @models_router  = routing[:models_router]
+        @config          = config
+        @router          = routing[:router]
+        @models_router   = routing[:models_router]
         @stream_callback = routing[:stream_callback]
-        @tools          = tools
-        @prompt_builder = prompt_builder
-        @audit          = audit
+        @status_callback = routing[:status_callback]
+        @tools           = tools
+        @prompt_builder  = prompt_builder
+        @audit           = audit
 
         # Support both single-provider (backward compat) and multi-provider (routing) modes
         if routing[:providers]
@@ -298,10 +299,12 @@ module Homunculus
       # or nil if the loop should continue (tool results were added and another
       # LLM call is needed).
       def dispatch_turn(response, session)
+        tier, model, escalated_from = tier_metadata_from_response(response)
+
         case response.stop_reason
         when "end_turn", "stop"
           session.add_message(role: :assistant, content: response.content)
-          AgentResult.completed(response.content, session:)
+          AgentResult.completed(response.content, session:, tier:, model:, escalated_from:)
 
         when "tool_use"
           session.add_message(role: :assistant, content: response.content, tool_calls: response.tool_calls)
@@ -325,14 +328,25 @@ module Homunculus
           session.add_message(role: :assistant, content: response.content)
           AgentResult.completed(
             "#{response.content}\n\n⚠️ Response was truncated due to token limit.",
-            session:
+            session:, tier:, model:, escalated_from:
           )
 
         else
           logger.warn("Unknown stop reason", stop_reason: response.stop_reason, session_id: session.id)
           session.add_message(role: :assistant, content: response.content)
-          AgentResult.completed(response.content, session:)
+          AgentResult.completed(response.content, session:, tier:, model:, escalated_from:)
         end
+      end
+
+      def tier_metadata_from_response(response)
+        raw = response.raw_response
+        return [nil, nil, nil] unless raw.respond_to?(:tier)
+
+        [
+          raw.tier&.to_s,
+          raw.respond_to?(:model) ? raw.model : nil,
+          raw.respond_to?(:escalated_from) ? raw.escalated_from&.to_s : nil
+        ]
       end
 
       # ── Continue & Tool Execution ─────────────────────────────────────
@@ -462,6 +476,8 @@ module Homunculus
           confirmed:
         )
 
+        @status_callback&.call(:tool_start, tool_call.name)
+
         result = Timeout.timeout(@config.agent.max_execution_time_seconds) do
           @tools.execute(
             name: tool_call.name,
@@ -471,6 +487,8 @@ module Homunculus
         end
 
         duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000).round
+
+        @status_callback&.call(:tool_end, tool_call.name)
 
         @audit.log(
           action: "tool_exec_end",
@@ -500,18 +518,25 @@ module Homunculus
       end
     end
 
-    # Result type for the agent loop
-    AgentResult = Data.define(:status, :response, :error, :pending_tool_call, :session) do
-      def self.completed(response, session:)
-        new(status: :completed, response:, error: nil, pending_tool_call: nil, session:)
+    # Result type for the agent loop.
+    # Optional tier/model/escalated_from are set when using models_router (from Models::Response).
+    AgentResult = Data.define(:status, :response, :error, :pending_tool_call, :session, :tier, :model, :escalated_from) do
+      def self.completed(response, session:, tier: nil, model: nil, escalated_from: nil)
+        new(
+          status: :completed, response:, error: nil, pending_tool_call: nil, session:,
+          tier:, model:, escalated_from:
+        )
       end
 
       def self.pending_confirmation(tool_call, session:)
-        new(status: :pending_confirmation, response: nil, error: nil, pending_tool_call: tool_call, session:)
+        new(
+          status: :pending_confirmation, response: nil, error: nil, pending_tool_call: tool_call, session:,
+          tier: nil, model: nil, escalated_from: nil
+        )
       end
 
       def self.error(error, session:)
-        new(status: :error, response: nil, error:, pending_tool_call: nil, session:)
+        new(status: :error, response: nil, error:, pending_tool_call: nil, session:, tier: nil, model: nil, escalated_from: nil)
       end
 
       def completed? = status == :completed

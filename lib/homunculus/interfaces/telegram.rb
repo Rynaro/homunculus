@@ -4,6 +4,8 @@ require "sequel"
 require "fileutils"
 require "telegram/bot"
 require_relative "telegram/memory_curation"
+require_relative "../sag/llm_adapter"
+require_relative "../sag/pipeline_factory"
 
 module Homunculus
   module Interfaces
@@ -59,6 +61,14 @@ module Homunculus
       def setup_components!
         @audit = Security::AuditLogger.new(@config.security.audit_log_path)
         @memory_store = build_memory_store
+
+        # Build model providers first — tool registry needs them for SAG wiring
+        @providers = {}
+        @providers[:ollama] = Agent::ModelProvider.new(@config.models[:local]) if @config.models[:local]
+        if @config.escalation_enabled? && @config.models[:escalation]
+          @providers[:anthropic] = Agent::ModelProvider.new(@config.models[:escalation])
+        end
+
         @tool_registry = build_tool_registry
 
         # Multi-agent manager (loads workspace/agents/)
@@ -80,12 +90,6 @@ module Homunculus
           agent_manager: @agent_manager
         )
 
-        # Build model providers
-        @providers = {}
-        @providers[:ollama] = Agent::ModelProvider.new(@config.models[:local]) if @config.models[:local]
-        if @config.escalation_enabled? && @config.models[:escalation]
-          @providers[:anthropic] = Agent::ModelProvider.new(@config.models[:escalation])
-        end
         providers = @providers
 
         # Budget tracker (uses data/ directory alongside other DBs)
@@ -178,7 +182,23 @@ module Homunculus
           registry.register(Tools::MemoryCurate.new(memory_store: @memory_store))
         end
 
+        register_sag_tool(registry) if @config.sag.enabled
         registry
+      end
+
+      def register_sag_tool(registry)
+        ollama_provider = @providers[:ollama]
+        return unless ollama_provider
+
+        llm_adapter = SAG::LLMAdapter.new(provider: ollama_provider)
+        factory = SAG::PipelineFactory.new(
+          config: @config.sag,
+          llm_adapter: llm_adapter
+        )
+        registry.register(Tools::WebResearch.new(pipeline_factory: factory))
+        logger.info("SAG web_research tool registered")
+      rescue StandardError => e
+        logger.warn("SAG tool registration failed — web_research unavailable", error: e.message)
       end
 
       def build_memory_store
