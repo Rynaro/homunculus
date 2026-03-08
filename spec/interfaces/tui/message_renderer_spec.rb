@@ -4,9 +4,10 @@ require "spec_helper"
 require_relative "../../../lib/homunculus/interfaces/tui"
 
 RSpec.describe Homunculus::Interfaces::TUI::MessageRenderer do
+  subject(:renderer) { described_class.new(width:, agent_name:) }
+
   let(:width) { 80 }
   let(:agent_name) { "Homunculus" }
-  subject(:renderer) { described_class.new(width:, agent_name:) }
 
   describe "#render" do
     it "renders a user message with You prefix" do

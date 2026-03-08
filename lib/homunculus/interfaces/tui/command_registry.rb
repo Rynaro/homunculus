@@ -38,9 +38,9 @@ module Homunculus
           return [] if partial.nil? || !partial.to_s.start_with?("/")
 
           COMMANDS.keys
-            .select { |cmd| cmd.start_with?(partial.to_s) }
-            .sort
-            .map { |cmd| { command: cmd, description: COMMANDS[cmd][:description] } }
+                  .select { |cmd| cmd.start_with?(partial.to_s) }
+                  .sort
+                  .map { |cmd| { command: cmd, description: COMMANDS[cmd][:description] } }
         end
       end
     end

@@ -7,6 +7,37 @@ RSpec.describe Homunculus::Agent::Loop do
   let(:config) { Homunculus::Config.load("config/default.toml") }
   let(:session) { Homunculus::Session.new }
 
+  let(:loop_instance) do
+    described_class.new(
+      config:,
+      provider:,
+      tools: tool_registry,
+      prompt_builder:,
+      audit:
+    )
+  end
+  let(:provider) { instance_double(Homunculus::Agent::ModelProvider) }
+  let(:prompt_builder) do
+    Homunculus::Agent::PromptBuilder.new(
+      workspace_path: config.agent.workspace_path,
+      tool_registry: tool_registry
+    )
+  end
+  let(:tool_registry) { Homunculus::Tools::Registry.new }
+  let(:audit) { Homunculus::Security::AuditLogger.new(audit_file.path) }
+  let(:audit_file) { Tempfile.new(["audit", ".jsonl"]) }
+
+  after do
+    audit_file.close
+    audit_file.unlink
+  end
+
+  before do
+    tool_registry.register(Homunculus::Tools::Echo.new)
+    tool_registry.register(Homunculus::Tools::DatetimeNow.new)
+    tool_registry.register(Homunculus::Tools::WorkspaceWrite.new)
+  end
+
   describe "AgentResult" do
     it "stores optional tier, model, escalated_from when provided" do
       result = Homunculus::Agent::AgentResult.completed(
@@ -40,38 +71,6 @@ RSpec.describe Homunculus::Agent::Loop do
       expect(result.model).to be_nil
       expect(result.escalated_from).to be_nil
     end
-  end
-
-  let(:audit_file) { Tempfile.new(["audit", ".jsonl"]) }
-  let(:audit) { Homunculus::Security::AuditLogger.new(audit_file.path) }
-  let(:tool_registry) { Homunculus::Tools::Registry.new }
-  let(:prompt_builder) do
-    Homunculus::Agent::PromptBuilder.new(
-      workspace_path: config.agent.workspace_path,
-      tool_registry: tool_registry
-    )
-  end
-  let(:provider) { instance_double(Homunculus::Agent::ModelProvider) }
-
-  let(:loop_instance) do
-    described_class.new(
-      config:,
-      provider:,
-      tools: tool_registry,
-      prompt_builder:,
-      audit:
-    )
-  end
-
-  before do
-    tool_registry.register(Homunculus::Tools::Echo.new)
-    tool_registry.register(Homunculus::Tools::DatetimeNow.new)
-    tool_registry.register(Homunculus::Tools::WorkspaceWrite.new)
-  end
-
-  after do
-    audit_file.close
-    audit_file.unlink
   end
 
   def make_response(content:, tool_calls: nil, stop_reason: "end_turn", raw_response: {})
