@@ -974,7 +974,10 @@ RSpec.describe Homunculus::Interfaces::TUI do
       indicator = tui.instance_variable_get(:@activity_indicator)
       allow(indicator).to receive(:start)
       allow(indicator).to receive(:stop)
-      allow(Thread).to receive(:new) { |&block| block.call; double("thread", alive?: false, join: nil, value: nil) }
+      allow(Thread).to receive(:new) do |&block|
+        block.call
+        instance_double(Thread, alive?: false, join: nil, value: nil)
+      end
       tui.send(:handle_message, "hello")
       msgs = tui.instance_variable_get(:@messages)
       expect(msgs.any? { |m| m[:role] == :error && m[:text].include?("network down") }).to be true
@@ -990,7 +993,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
       allow(indicator).to receive(:stop)
       allow(Thread).to receive(:new) do |&block|
         r = block.call
-        double("thread", alive?: false, join: nil, value: r)
+        instance_double(Thread, alive?: false, join: nil, value: r)
       end
       tui.send(:handle_message, "ping")
       expect(tui).to have_received(:display_result).with(result)
