@@ -1,0 +1,394 @@
+---
+metadata:
+  plan_id: "2025-03-08-tui-experience-augmentation"
+  created: "2025-03-08"
+  methodology: "SPECTRA v4.2.0"
+  intent_type: CHANGE
+  complexity: 7
+  confidence: 87
+  confidence_gate: AUTO_PROCEED
+  total_timebox_days: 10
+
+project:
+  name: "TUI Experience Augmentation"
+  description: >
+    Fix UX issues and add interactive features to the Homunculus TUI:
+    cursor navigation, scrolling during streaming, activity spinner,
+    real-time tokens, timestamps, deduplicated UI, slash commands, and
+    enhanced model tier display.
+
+stories:
+  - id: story-1
+    title: "Input Buffer with Cursor Navigation"
+    timebox: "1.5d"
+    risk: P1
+    depends_on: []
+    agent_class: builder
+    actions:
+      - verb: Create
+        target: "InputBuffer class"
+        detail: >
+          Internal class with @buf (String), @cursor (Integer).
+          Methods: insert(char), backspace, delete, move_left, move_right,
+          move_home, move_end, move_word_left, move_word_right, to_s, clear.
+      - verb: Modify
+        target: "read_line"
+        detail: >
+          Replace raw buf string with InputBuffer instance. Route Left/Right
+          arrow escape sequences to InputBuffer movement methods.
+      - verb: Modify
+        target: "consume_escape_sequence"
+        detail: >
+          Route [D (Left) and [C (Right) to InputBuffer.move_left/move_right.
+          Add [H (Home), [F (End), [1;5C (Ctrl+Right), [1;5D (Ctrl+Left).
+      - verb: Modify
+        target: "render_input_line"
+        detail: >
+          Show visible cursor at InputBuffer.cursor position using ANSI
+          cursor positioning. Show cursor during input, hide during renders.
+      - verb: Create
+        target: "Ctrl key bindings"
+        detail: >
+          Ctrl+A (home), Ctrl+E (end), Ctrl+W (delete word backward) in read_line.
+      - verb: Test
+        target: "InputBuffer specs"
+        detail: >
+          Insert, delete, cursor movement, boundary conditions, word movement.
+    acceptance_criteria:
+      - "GIVEN user typing, WHEN Left/Right pressed, THEN cursor moves within text"
+      - "GIVEN cursor at position 5 in 10-char input, WHEN Backspace, THEN char before cursor deleted"
+      - "GIVEN Ctrl+A pressed, THEN cursor moves to position 0"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+      - "spec/interfaces/tui_spec.rb"
+    validation_gates:
+      - "All existing TUI specs pass"
+      - "New InputBuffer specs pass"
+
+  - id: story-2
+    title: "Fix Scrolling During Streaming & Agent Execution"
+    timebox: "2d"
+    risk: P0
+    depends_on:
+      - story-1
+    agent_class: reasoner
+    actions:
+      - verb: Modify
+        target: "handle_message"
+        detail: >
+          Run @agent_loop.run in a background Thread. Main thread enters
+          scroll-only input mode that processes Up/Down/PgUp/PgDown.
+      - verb: Create
+        target: "Scroll-only input reader"
+        detail: >
+          During agent execution, read_line variant that only handles scroll
+          keys. Other input queued or ignored until agent completes.
+      - verb: Modify
+        target: "build_stream_callback"
+        detail: >
+          Add Mutex around @messages and @streaming_buf mutations for
+          thread safety between agent thread and scroll-reader thread.
+      - verb: Create
+        target: "Auto-scroll behavior"
+        detail: >
+          Add @scroll_lock flag. Auto-scroll to bottom when new content
+          arrives UNLESS user has scrolled up (offset > 0). Re-enable
+          when user scrolls back to bottom.
+      - verb: Modify
+        target: "render_chat_panel"
+        detail: >
+          Add scroll indicators: "▲ more above" / "▼ more below" when
+          not viewing newest messages.
+      - verb: Test
+        target: "Concurrent scroll specs"
+        detail: >
+          Thread safety of message buffer; scroll during streaming mock.
+    acceptance_criteria:
+      - "GIVEN agent streaming, WHEN Page Up pressed, THEN chat scrolls up while streaming continues"
+      - "GIVEN user scrolled up during streaming, WHEN new chunks arrive, THEN view stays at user position"
+      - "GIVEN user at scroll bottom, WHEN new content arrives, THEN auto-scrolls to show it"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+      - "lib/homunculus/agent/loop.rb"
+    validation_gates:
+      - "No deadlocks"
+      - "Scroll works during streaming"
+      - "All existing specs pass"
+
+  - id: story-3
+    title: "Activity Spinner with Step Messages"
+    timebox: "1.5d"
+    risk: P1
+    depends_on:
+      - story-2
+    agent_class: builder
+    actions:
+      - verb: Create
+        target: "ActivityIndicator class"
+        detail: >
+          Braille spinner animation (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ at ~100ms).
+          Methods: start(message), update(message), stop.
+          Renders in status bar region via dedicated thread.
+      - verb: Modify
+        target: "handle_message"
+        detail: >
+          spinner.start("Thinking...") before agent_loop.run.
+          On first stream chunk: spinner.update("Receiving response...") then stop.
+      - verb: Create
+        target: "Step-aware status callbacks"
+        detail: >
+          Tool execution hooks: spinner.update("Running tool: {name}...") on
+          tool start; spinner.update("Processing results...") on tool end.
+          May need status_callback lambda alongside stream_callback.
+      - verb: Modify
+        target: "render_status_bar"
+        detail: >
+          When spinner active, replace session_status_label with spinner frame + message.
+      - verb: Test
+        target: "ActivityIndicator specs"
+        detail: >
+          Start/stop lifecycle, message update, thread cleanup on shutdown.
+    acceptance_criteria:
+      - "GIVEN user sends message, WHEN agent processing, THEN spinner with 'Thinking...' in status bar"
+      - "GIVEN agent calls tool, WHEN tool executes, THEN spinner shows tool name"
+      - "GIVEN agent starts streaming, WHEN first chunk arrives, THEN spinner stops"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+    validation_gates:
+      - "Spinner visible during agent execution"
+      - "No orphaned threads on exit"
+
+  - id: story-4
+    title: "Real-Time Token Consumption Display"
+    timebox: "1d"
+    risk: P2
+    depends_on:
+      - story-3
+    agent_class: builder
+    actions:
+      - verb: Modify
+        target: "build_stream_callback"
+        detail: >
+          Estimate output tokens during streaming via word count * 1.3 heuristic,
+          or parse Ollama streaming chunk metadata if available.
+      - verb: Modify
+        target: "token_usage_label"
+        detail: >
+          Show per-message deltas alongside session totals:
+          "tokens: 1,240↓ 892↑ (session: 4,500↓ 3,200↑)"
+      - verb: Modify
+        target: "refresh_status_bar"
+        detail: >
+          Already called per chunk; ensure estimated token count updates are visible.
+      - verb: Configure
+        target: "Ollama final chunk parsing"
+        detail: >
+          Investigate if OllamaProvider.generate_stream exposes eval_count
+          and prompt_eval_count from the final streaming chunk. Use if available.
+      - verb: Test
+        target: "Token display specs"
+        detail: >
+          Mock streaming chunks; verify status bar updates with estimates.
+    acceptance_criteria:
+      - "GIVEN agent streaming, WHEN tokens generated, THEN status bar shows updating count"
+      - "GIVEN response completes, WHEN final counts available, THEN status bar shows accurate totals"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+      - "lib/homunculus/agent/models/ollama_provider.rb"
+    validation_gates:
+      - "Token counts visible during streaming"
+      - "Final counts accurate"
+
+  - id: story-5
+    title: "Chat Timestamps"
+    timebox: "0.5d"
+    risk: P2
+    depends_on: []
+    agent_class: builder
+    actions:
+      - verb: Modify
+        target: "push_*_message methods"
+        detail: >
+          Add timestamp: Time.now to all message hashes (user, assistant,
+          info, error).
+      - verb: Modify
+        target: "render_message"
+        detail: >
+          Prepend dim [HH:MM] timestamp before role label on first line.
+          Account for timestamp width in word-wrap calculation.
+      - verb: Modify
+        target: "build_stream_callback"
+        detail: >
+          Set timestamp on streaming message when first chunk arrives.
+      - verb: Test
+        target: "Timestamp rendering specs"
+        detail: >
+          Verify timestamp present on all message types; format correct.
+    acceptance_criteria:
+      - "GIVEN any message, WHEN rendered, THEN shows [HH:MM] before role label"
+      - "GIVEN streaming message, WHEN first chunk, THEN timestamp is streaming start time"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+      - "spec/interfaces/tui_spec.rb"
+    validation_gates:
+      - "Timestamps on all message types"
+      - "Existing render specs adapted"
+
+  - id: story-6
+    title: "Fix Duplicate UI Elements"
+    timebox: "0.5d"
+    risk: P1
+    depends_on: []
+    agent_class: builder
+    actions:
+      - verb: Modify
+        target: "show_help"
+        detail: >
+          Render help as temporary overlay on chat panel instead of pushing
+          to @messages. Set @help_visible flag. Next input clears overlay.
+      - verb: Modify
+        target: "show_status"
+        detail: >
+          Similarly render as overlay, not persistent message.
+      - verb: Create
+        target: "Overlay rendering mechanism"
+        detail: >
+          render_overlay(lines) renders temporary content in chat panel region.
+          @overlay_content stores current overlay. refresh_all checks and clears.
+      - verb: Modify
+        target: "input_loop / process_input"
+        detail: >
+          Clear any active overlay before processing new input.
+      - verb: Test
+        target: "Deduplication specs"
+        detail: >
+          show_help twice does not create duplicate @messages entries.
+          Overlay renders and clears on next input.
+    acceptance_criteria:
+      - "GIVEN 'help' typed twice, WHEN checking @messages, THEN no duplicate help entries"
+      - "GIVEN help overlay showing, WHEN new message typed, THEN overlay disappears"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+    validation_gates:
+      - "No duplicate help in @messages"
+      - "Overlay renders and clears correctly"
+
+  - id: story-7
+    title: "Slash Command Support with Suggestions"
+    timebox: "2d"
+    risk: P1
+    depends_on:
+      - story-1
+      - story-6
+    agent_class: builder
+    actions:
+      - verb: Create
+        target: "CommandRegistry class"
+        detail: >
+          COMMANDS hash mapping /help, /status, /clear, /confirm, /deny,
+          /model, /quit (/exit, /q aliases) to {description:, handler:}.
+          Methods: match(input), suggestions(partial).
+      - verb: Modify
+        target: "process_input"
+        detail: >
+          Check for / prefix first. Exact match dispatches to handler.
+          Partial match shows suggestion overlay. No match shows error.
+      - verb: Modify
+        target: "read_line"
+        detail: >
+          When / is first char, enter command mode. After each char, call
+          suggestions(buf) and render dropdown above input. Tab completes
+          top suggestion. Escape dismisses.
+      - verb: Create
+        target: "/model command handler"
+        detail: >
+          Shows current tier name, model, provider, description from models.toml.
+          Shows escalation status and budget info if available.
+      - verb: Modify
+        target: "backward compatibility"
+        detail: >
+          Keep bare help, status, etc. working alongside slash variants.
+      - verb: Test
+        target: "CommandRegistry specs"
+        detail: >
+          Matching, suggestions, Tab completion, unknown command handling.
+    acceptance_criteria:
+      - "GIVEN / typed, WHEN continuing to type, THEN matching commands shown as suggestions"
+      - "GIVEN /he typed + Tab, THEN input auto-completes to /help"
+      - "GIVEN /help + Enter, THEN help text displayed"
+      - "GIVEN /model, THEN current tier, model, provider displayed"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+      - "config/models.toml"
+    validation_gates:
+      - "Slash commands work"
+      - "Tab completion works"
+      - "Backward compat preserved"
+
+  - id: story-8
+    title: "Enhanced Model Tier Display"
+    timebox: "1d"
+    risk: P2
+    depends_on:
+      - story-4
+    agent_class: builder
+    actions:
+      - verb: Modify
+        target: "model_tier_label"
+        detail: >
+          Show resolved tier + model: "workhorse (qwen3:14b)" instead of "router".
+          During escalation: "cloud_fast (claude-haiku) ⚡ escalated from workhorse".
+      - verb: Create
+        target: "@current_tier tracking"
+        detail: >
+          Add @current_tier, @current_model instance variables. Update from
+          Models::Response tier/model fields via stream callback or agent result.
+      - verb: Modify
+        target: "build_stream_callback / display_result"
+        detail: >
+          Capture tier info from router response. Propagate tier through
+          models_response_to_loop_response if needed.
+      - verb: Modify
+        target: "status bar color coding"
+        detail: >
+          Local tiers: green. Cloud tiers: yellow. Escalated: red background.
+      - verb: Modify
+        target: "/model command"
+        detail: >
+          Include tier description from models.toml in the output.
+      - verb: Test
+        target: "Tier display specs"
+        detail: >
+          Tier label rendering for each tier type; color coding.
+    acceptance_criteria:
+      - "GIVEN workhorse response, WHEN status bar shown, THEN displays 'workhorse (qwen3:14b)' in green"
+      - "GIVEN cloud escalation, WHEN status bar shown, THEN shows cloud tier with escalation indicator"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+      - "lib/homunculus/agent/models/router.rb"
+      - "lib/homunculus/agent/loop.rb"
+      - "config/models.toml"
+    validation_gates:
+      - "Tier name + model visible"
+      - "Escalation marked"
+      - "Colors applied"
+
+execution_plan:
+  recommended_order:
+    - story-1
+    - story-5
+    - story-6
+    - story-2
+    - story-3
+    - story-4
+    - story-7
+    - story-8
+  parallelizable:
+    - [story-5, story-6]
+    - [story-1, story-5, story-6]
+  critical_path:
+    - story-1
+    - story-2
+    - story-3
+    - story-4
+    - story-8

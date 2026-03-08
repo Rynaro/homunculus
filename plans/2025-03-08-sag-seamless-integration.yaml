@@ -1,0 +1,155 @@
+---
+metadata:
+  plan_id: "2025-03-08-sag-seamless-integration"
+  created: "2025-03-08"
+  methodology: "SPECTRA v4.2.0"
+  intent_type: BUG_SPEC
+  complexity: 6
+  confidence: 89
+  confidence_gate: AUTO_PROCEED
+  total_timebox_days: 3
+
+project:
+  name: "SAG Seamless Integration Fix"
+  description: >
+    Fix web_research tool: register in all interfaces with SAG pipeline factory,
+    build LLM adapter, add TUI activity indicator during SAG ops, graceful degradation.
+
+stories:
+  - id: story-1
+    title: "Build SAG LLM Adapter & Pipeline Factory"
+    timebox: "1d"
+    risk: P0
+    depends_on: []
+    agent_class: builder
+    actions:
+      - verb: Create
+        target: "lib/homunculus/sag/llm_adapter.rb"
+        detail: >
+          Callable class wrapping Models::Router or ModelProvider into the
+          @llm.call(prompt, max_tokens:) interface. Uses fixed tier (:workhorse)
+          to avoid keyword routing recursion.
+      - verb: Create
+        target: "lib/homunculus/sag/pipeline_factory.rb"
+        detail: >
+          Constructs SAG::Pipeline from config + LLM adapter. Wires SearXNG
+          backend, Retriever, Reranker, GroundedGenerator, PostProcessor.
+      - verb: Test
+        target: "spec/sag/llm_adapter_spec.rb, spec/sag/pipeline_factory_spec.rb"
+        detail: >
+          Adapter returns text from provider. Factory builds valid pipeline.
+    acceptance_criteria:
+      - "GIVEN config with SAG enabled, WHEN PipelineFactory#call invoked, THEN returns wired Pipeline"
+      - "GIVEN LLMAdapter wrapping Router, WHEN called with prompt, THEN returns text via workhorse tier"
+    context_files:
+      - "lib/homunculus/sag/grounded_generator.rb"
+      - "lib/homunculus/sag/query_analyzer.rb"
+      - "lib/homunculus/sag/pipeline.rb"
+      - "lib/homunculus/agent/models/router.rb"
+    validation_gates:
+      - "New specs pass"
+      - "Existing SAG specs pass"
+
+  - id: story-2
+    title: "Register web_research Tool in Interfaces"
+    timebox: "0.5d"
+    risk: P0
+    depends_on:
+      - story-1
+    agent_class: builder
+    actions:
+      - verb: Modify
+        target: "lib/homunculus/interfaces/tui.rb (build_tool_registry, setup_components!)"
+        detail: >
+          Conditionally register WebResearch when config.sag.enabled. Build
+          LLM adapter from models_router (or legacy provider). Reorder
+          initialization: models_router before tool registry.
+      - verb: Modify
+        target: "lib/homunculus/interfaces/cli.rb (build_tool_registry)"
+        detail: >
+          Same conditional registration for CLI.
+      - verb: Modify
+        target: "lib/homunculus/interfaces/telegram.rb (build_tool_registry)"
+        detail: >
+          Same conditional registration for Telegram.
+    acceptance_criteria:
+      - "GIVEN sag.enabled = true, WHEN TUI starts, THEN web_research in registry"
+      - "GIVEN sag.enabled = false, WHEN TUI starts, THEN web_research NOT in registry"
+      - "GIVEN agent asked to research, WHEN LLM calls web_research, THEN SAG pipeline runs"
+    context_files:
+      - "lib/homunculus/interfaces/tui.rb"
+      - "lib/homunculus/interfaces/cli.rb"
+      - "lib/homunculus/interfaces/telegram.rb"
+      - "lib/homunculus/tools/web_research.rb"
+    validation_gates:
+      - "Tool appears in definitions when SAG enabled"
+      - "All existing interface specs pass"
+
+  - id: story-3
+    title: "TUI Activity Indicator for Tool Execution"
+    timebox: "1d"
+    risk: P1
+    depends_on:
+      - story-2
+    agent_class: builder
+    actions:
+      - verb: Modify
+        target: "lib/homunculus/agent/loop.rb (constructor, execute_tool)"
+        detail: >
+          Add optional status_callback: parameter. Call it with (:tool_start, name)
+          and (:tool_end, name) around tool execution.
+      - verb: Modify
+        target: "lib/homunculus/interfaces/tui.rb (build_loop_with_models_router)"
+        detail: >
+          Provide status_callback lambda that updates ActivityIndicator with
+          tool name during execution.
+    acceptance_criteria:
+      - "GIVEN agent calls web_research, WHEN tool starts, THEN indicator shows 'Searching the web...'"
+      - "GIVEN tool finishes, WHEN agent continues, THEN indicator updates"
+    context_files:
+      - "lib/homunculus/agent/loop.rb"
+      - "lib/homunculus/interfaces/tui.rb"
+      - "lib/homunculus/interfaces/tui/activity_indicator.rb"
+    validation_gates:
+      - "Activity indicator updates during tool execution"
+      - "Existing loop specs pass"
+
+  - id: story-4
+    title: "Graceful Degradation"
+    timebox: "0.5d"
+    risk: P1
+    depends_on:
+      - story-1
+    agent_class: builder
+    actions:
+      - verb: Modify
+        target: "lib/homunculus/sag/llm_adapter.rb"
+        detail: >
+          Rescue ProviderError in #call, return meaningful error message.
+      - verb: Verify
+        target: "Existing error handling in SearXNG and WebResearch"
+        detail: >
+          Confirm SearXNG#search returns [] on failure, Pipeline returns
+          PipelineResult.error, and WebResearch#execute catches all StandardError.
+    acceptance_criteria:
+      - "GIVEN SearXNG down, WHEN web_research called, THEN clean failure result"
+      - "GIVEN Ollama error in SAG generator, WHEN pipeline runs, THEN clean failure"
+    context_files:
+      - "lib/homunculus/sag/search_backend/searxng.rb"
+      - "lib/homunculus/sag/pipeline.rb"
+      - "lib/homunculus/tools/web_research.rb"
+    validation_gates:
+      - "Error scenarios produce Result.fail, not exceptions"
+
+execution_plan:
+  recommended_order:
+    - story-1
+    - story-4
+    - story-2
+    - story-3
+  parallelizable:
+    - [story-4, story-2]
+  critical_path:
+    - story-1
+    - story-2
+    - story-3
