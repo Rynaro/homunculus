@@ -158,8 +158,21 @@ module Homunculus
     attribute :typing_indicator, Types::Strict::Bool.default(true)
   end
 
+  class SAGConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :enabled, Types::Strict::Bool.default(false)
+    attribute :searxng_url, Types::Strict::String.default("http://localhost:8888")
+    attribute :searxng_categories, Types::Strict::Array.of(Types::Strict::String).default(["general"].freeze)
+    attribute :top_n_results, Types::Strict::Integer.default(5)
+    attribute :deep_fetch, Types::Strict::Bool.default(false)
+    attribute :reranking_strategy, Types::Strict::String.default("embedding")
+    attribute :max_tokens, Types::Strict::Integer.default(1024)
+    attribute :searxng_timeout, Types::Strict::Integer.default(15)
+  end
+
   class Config
-    attr_reader :gateway, :models, :agent, :tools, :memory, :security, :telegram, :mqtt, :scheduler
+    attr_reader :gateway, :models, :agent, :tools, :memory, :security, :telegram, :mqtt, :scheduler, :sag
 
     def self.load(path = "config/default.toml")
       raw = TomlRB.load_file(path)
@@ -193,6 +206,7 @@ module Homunculus
       @telegram = TelegramConfig.new(raw.dig("interfaces", "telegram") || {})
       @mqtt = build_mqtt(mqtt_raw)
       @scheduler = build_scheduler(raw.fetch("scheduler", {}))
+      @sag = SAGConfig.new(raw.fetch("sag", {}))
 
       @gateway.validate!
     end

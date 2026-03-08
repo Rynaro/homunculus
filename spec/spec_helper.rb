@@ -31,6 +31,8 @@ Dotenv.load(".env")
 require "semantic_logger"
 SemanticLogger.default_level = :fatal
 
+require "webmock/rspec"
+
 require_relative "../lib/homunculus/version"
 require_relative "../lib/homunculus/utils/logging"
 require_relative "../lib/homunculus/config"
@@ -81,6 +83,16 @@ require_relative "../lib/homunculus/scheduler/job_store"
 require_relative "../lib/homunculus/scheduler/notification"
 require_relative "../lib/homunculus/scheduler/manager"
 require_relative "../lib/homunculus/scheduler/heartbeat"
+require_relative "../lib/homunculus/sag/snippet"
+require_relative "../lib/homunculus/sag/search_backend/base"
+require_relative "../lib/homunculus/sag/search_backend/searxng"
+require_relative "../lib/homunculus/sag/query_analyzer"
+require_relative "../lib/homunculus/sag/retriever"
+require_relative "../lib/homunculus/sag/reranker"
+require_relative "../lib/homunculus/sag/grounded_generator"
+require_relative "../lib/homunculus/sag/post_processor"
+require_relative "../lib/homunculus/sag/pipeline"
+require_relative "../lib/homunculus/tools/web_research"
 require_relative "../lib/homunculus/interfaces/telegram"
 
 RSpec.configure do |config|

@@ -18,7 +18,7 @@ module Homunculus
       def embed(text)
         response = HTTPX
                    .with(timeout: { operation_timeout: 30 })
-                   .post("#{@base_url}/api/embed", json: {
+                   .post("#{@base_url}/api/embeddings", json: {
                            model: @model,
                            input: text
                          })
@@ -47,7 +47,7 @@ module Homunculus
 
         response = HTTPX
                    .with(timeout: { operation_timeout: 120 })
-                   .post("#{@base_url}/api/embed", json: {
+                   .post("#{@base_url}/api/embeddings", json: {
                            model: @model,
                            input: texts
                          })

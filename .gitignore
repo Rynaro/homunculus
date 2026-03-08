@@ -47,6 +47,7 @@ docker-compose.override.yml
 # Model fleet config — users maintain their own config/models.toml locally.
 # See config/models.toml.example for the template.
 /config/models.toml
+/config/ollama.env
 
 # Audit logs (sensitive)
 /data/audit.jsonl
