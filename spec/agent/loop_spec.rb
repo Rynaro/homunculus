@@ -6,6 +6,42 @@ require "tempfile"
 RSpec.describe Homunculus::Agent::Loop do
   let(:config) { Homunculus::Config.load("config/default.toml") }
   let(:session) { Homunculus::Session.new }
+
+  describe "AgentResult" do
+    it "stores optional tier, model, escalated_from when provided" do
+      result = Homunculus::Agent::AgentResult.completed(
+        "OK",
+        session:,
+        tier: "workhorse",
+        model: "qwen3:14b",
+        escalated_from: nil
+      )
+      expect(result.status).to eq(:completed)
+      expect(result.response).to eq("OK")
+      expect(result.tier).to eq("workhorse")
+      expect(result.model).to eq("qwen3:14b")
+      expect(result.escalated_from).to be_nil
+    end
+
+    it "stores escalated_from when provided" do
+      result = Homunculus::Agent::AgentResult.completed(
+        "OK",
+        session:,
+        tier: "cloud_fast",
+        model: "claude-haiku",
+        escalated_from: "workhorse"
+      )
+      expect(result.escalated_from).to eq("workhorse")
+    end
+
+    it "leaves tier/model/escalated_from nil when not provided (backward compat)" do
+      result = Homunculus::Agent::AgentResult.completed("OK", session:)
+      expect(result.tier).to be_nil
+      expect(result.model).to be_nil
+      expect(result.escalated_from).to be_nil
+    end
+  end
+
   let(:audit_file) { Tempfile.new(["audit", ".jsonl"]) }
   let(:audit) { Homunculus::Security::AuditLogger.new(audit_file.path) }
   let(:tool_registry) { Homunculus::Tools::Registry.new }
@@ -38,14 +74,14 @@ RSpec.describe Homunculus::Agent::Loop do
     audit_file.unlink
   end
 
-  def make_response(content:, tool_calls: nil, stop_reason: "end_turn")
+  def make_response(content:, tool_calls: nil, stop_reason: "end_turn", raw_response: {})
     Homunculus::Agent::ModelProvider::Response.new(
       content:,
       tool_calls:,
       usage: Homunculus::Agent::ModelProvider::TokenUsage.new(input_tokens: 100, output_tokens: 50),
       model: "test-model",
       stop_reason:,
-      raw_response: {}
+      raw_response:
     )
   end
 
@@ -85,6 +121,35 @@ RSpec.describe Homunculus::Agent::Loop do
 
         expect(session.total_input_tokens).to eq(100)
         expect(session.total_output_tokens).to eq(50)
+      end
+
+      it "returns tier/model/escalated_from when raw_response has them (models_router)" do
+        raw = instance_double(
+          Homunculus::Agent::Models::Response,
+          tier: :workhorse, model: "qwen3:14b", escalated_from: nil
+        )
+        allow(provider).to receive(:complete).and_return(
+          make_response(content: "Hi", raw_response: raw)
+        )
+        result = loop_instance.run("Hello", session)
+        expect(result.status).to eq(:completed)
+        expect(result.tier).to eq("workhorse")
+        expect(result.model).to eq("qwen3:14b")
+        expect(result.escalated_from).to be_nil
+      end
+
+      it "returns escalated_from when raw_response indicates escalation" do
+        raw = instance_double(
+          Homunculus::Agent::Models::Response,
+          tier: :cloud_fast, model: "claude-haiku", escalated_from: :workhorse
+        )
+        allow(provider).to receive(:complete).and_return(
+          make_response(content: "Hi", raw_response: raw)
+        )
+        result = loop_instance.run("Hello", session)
+        expect(result.tier).to eq("cloud_fast")
+        expect(result.model).to eq("claude-haiku")
+        expect(result.escalated_from).to eq("workhorse")
       end
     end
 

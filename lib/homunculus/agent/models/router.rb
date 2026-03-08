@@ -41,6 +41,11 @@ module Homunculus
           tier_config = @config.dig("tiers", resolved_tier.to_s)
 
           unless tier_config
+            if tier.nil? && resolved_tier != DEFAULT_TIER
+              @logger.warn("Auto-routed to unknown tier, falling back to default",
+                           unknown_tier: resolved_tier, fallback: DEFAULT_TIER)
+              return generate(messages:, tools:, tier: DEFAULT_TIER, stream:, &)
+            end
             raise ConfigError, "Unknown tier: #{resolved_tier}. Available: #{@config.fetch("tiers", {}).keys.join(", ")}"
           end
 
@@ -57,7 +62,7 @@ module Homunculus
 
           attempt_with_escalation(
             messages:, tools:, tier_config:, provider:,
-            resolved_tier:, stream:, &
+            resolved_tier:, stream:, original_tier: tier, &
           )
         end
 
@@ -89,7 +94,8 @@ module Homunculus
           nil
         end
 
-        def attempt_with_escalation(messages:, tools:, tier_config:, provider:, resolved_tier:, stream:, &)
+        def attempt_with_escalation(messages:, tools:, tier_config:, provider:, resolved_tier:, stream:,
+                                    original_tier: nil, &)
           retries = 0
           max_retries = @config.dig("escalation", "max_local_retries") || 3
 
@@ -112,6 +118,14 @@ module Homunculus
           rescue ProviderError => e
             retries += 1
             @logger.error("Provider error", attempt: retries, max: max_retries, error: e.message)
+
+            # If an auto-routed tier fails on first attempt and escalation isn't available,
+            # fall back to the default workhorse tier (avoids retrying a model that doesn't exist)
+            if retries == 1 && resolved_tier != DEFAULT_TIER && original_tier.nil? && !escalation_enabled?
+              @logger.warn("Auto-routed tier failed without escalation, falling back to default",
+                           failed_tier: resolved_tier, fallback: DEFAULT_TIER)
+              return generate(messages:, tools:, tier: DEFAULT_TIER, stream:, &)
+            end
 
             if retries >= max_retries && escalation_enabled?
               @logger.warn("Max retries reached, escalating to cloud", from_tier: resolved_tier)
