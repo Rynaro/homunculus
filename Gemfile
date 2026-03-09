@@ -13,7 +13,7 @@ gem 'dotenv', '~> 3.1'
 gem 'toml-rb', '~> 3.0'
 
 # Type system & validation
-gem 'dry-struct', '~> 1.6'
+gem 'dry-struct', '~> 1.8'
 gem 'dry-types', '~> 1.7'
 
 # HTTP client
