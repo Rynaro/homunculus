@@ -4,12 +4,18 @@ require "uri"
 require "ipaddr"
 require "nokogiri"
 
+require_relative "web_classification"
+
 module Homunculus
   module Tools
     class WebFetch < Base
       tool_name "web_fetch"
       description <<~DESC.strip
-        Fetch the content of a web page or API endpoint.
+        Fetch content from a specific web page or endpoint when you already know the URL.
+        If `web_research` is available in this session, prefer it first for factual lookups like weather, news, prices, or scores.
+        Do not guess API endpoints or call APIs unless you know the required credentials are configured.
+        If this tool reports blocked_bot, js_required, timeout, or rate_limited, use web_research as fallback only when that tool is available.
+        If it reports auth_required, inform the user and ask for access, credentials, or a different public URL.
         Returns the page text (HTML stripped) or raw response body.
         Network access is required. Only HTTP/HTTPS URLs are allowed.
         Use mode 'extract_text' to strip HTML and get readable text.
@@ -53,12 +59,25 @@ module Homunculus
 
       BLOCKED_SCHEMES = %w[file ftp gopher data javascript].freeze
 
+      DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; Homunculus/1.0; +https://github.com/rynaro/homunculus)"
+
       def initialize(config: nil, session_store: nil)
         super()
         @config = config
         @session_store = session_store || WebSessionStore.new
         @request_timestamps = []
         @mutex = Mutex.new
+      end
+
+      def user_agent
+        return DEFAULT_USER_AGENT unless @config
+        return DEFAULT_USER_AGENT unless @config.respond_to?(:tools)
+
+        web_cfg = @config.tools.respond_to?(:web) ? @config.tools.web : nil
+        return DEFAULT_USER_AGENT unless web_cfg
+        return DEFAULT_USER_AGENT if web_cfg.user_agent_override.to_s.strip.empty?
+
+        web_cfg.user_agent_override.to_s.strip
       end
 
       def execute(arguments:, session:)
@@ -97,6 +116,12 @@ module Homunculus
         # Perform the fetch
         fetch_url(uri, mode:, extra_headers:, http_method:, body:, content_type:,
                        web_session_id:)
+      rescue HTTPX::TimeoutError, HTTPX::RequestTimeoutError, HTTPX::ReadTimeoutError,
+             HTTPX::OperationTimeoutError, HTTPX::ConnectTimeoutError => e
+        Result.fail(classification_message(WebClassification::TIMEOUT, prefix: "Web fetch error: #{e.message}"),
+                    fetch_mode: arguments.fetch(:mode, "extract_text"),
+                    failure_reason: WebClassification::TIMEOUT,
+                    response_classification: WebClassification::TIMEOUT)
       rescue StandardError => e
         Result.fail("Web fetch error: #{e.message}")
       end
@@ -166,7 +191,7 @@ module Homunculus
       def fetch_url(uri, mode:, extra_headers:, http_method: "GET", body: nil,
                     content_type: "application/json", web_session_id: nil)
         headers = {
-          "User-Agent" => "Homunculus/1.0 (bot)",
+          "User-Agent" => user_agent,
           "Accept" => mode == "raw" ? "*/*" : "text/html,application/xhtml+xml,*/*"
         }
         headers["Content-Type"] = content_type if body
@@ -175,29 +200,32 @@ module Homunculus
         client = build_http_client(headers, http_method:, web_session_id:)
         response = dispatch_request(client, uri, http_method, body)
 
-        unless response.respond_to?(:status)
-          msg = response.respond_to?(:error) && response.error ? response.error.message : "connection failed"
-          return Result.fail("HTTP error: #{msg}")
-        end
-
-        return Result.fail("HTTP #{response.status}: #{response.body.to_s[0..200]}") unless response.status == 200
-
-        store_response_cookies(response)
+        return fail_connection_error(response, mode) unless response.respond_to?(:status)
 
         response_body = response.body.to_s
+        classification = WebClassification.classify(status: response.status, body: response_body, timeout: false)
+
+        non_ok = handle_non_ok_status(response, response_body, classification, mode)
+        return non_ok if non_ok
+
+        class_fail = handle_classification_failure(classification, mode)
+        return class_fail if class_fail
+
+        store_response_cookies(response)
         response_body = response_body[0...MAX_RESPONSE_SIZE] if response_body.bytesize > MAX_RESPONSE_SIZE
+        content = mode == "extract_text" ? extract_text(response_body) : response_body
 
-        content = if mode == "extract_text"
-                    extract_text(response_body)
-                  else
-                    response_body
-                  end
-
-        Result.ok(content, url: uri.to_s, status: response.status, size: response_body.bytesize, method: http_method)
+        Result.ok(content, url: uri.to_s, status: response.status, size: response_body.bytesize,
+                           method: http_method, fetch_mode: mode, response_classification: WebClassification::SUCCESS)
       rescue HTTPX::TimeoutError
-        Result.fail("Request timed out after #{REQUEST_TIMEOUT}s")
+        Result.fail(classification_message(WebClassification::TIMEOUT,
+                                           prefix: "Request timed out after #{REQUEST_TIMEOUT}s"),
+                    fetch_mode: mode, failure_reason: WebClassification::TIMEOUT,
+                    response_classification: WebClassification::TIMEOUT)
       rescue HTTPX::Error => e
-        Result.fail("HTTP error: #{e.message}")
+        Result.fail(classification_message(WebClassification::BLOCKED_BOT, prefix: "HTTP error: #{e.message}"),
+                    fetch_mode: mode, failure_reason: WebClassification::BLOCKED_BOT,
+                    response_classification: "http_error")
       end
 
       def build_http_client(headers, http_method:, web_session_id:)
@@ -273,6 +301,54 @@ module Homunculus
         raise HTTPX::Error, ssrf_result if ssrf_result
       rescue URI::InvalidURIError
         raise HTTPX::Error, "Invalid redirect URL"
+      end
+
+      def fail_connection_error(response, mode)
+        msg = response.respond_to?(:error) && response.error ? response.error.message : "connection failed"
+        Result.fail(classification_message(WebClassification::BLOCKED_BOT, prefix: "HTTP error: #{msg}"),
+                    fetch_mode: mode, failure_reason: WebClassification::BLOCKED_BOT,
+                    response_classification: "connection_error")
+      end
+
+      def handle_non_ok_status(response, response_body, classification, mode)
+        return nil if response.status == 200
+
+        Result.fail(classification_message(classification[:failure_reason],
+                                           prefix: "HTTP #{response.status}: #{response_body[0..200]}"),
+                    fetch_mode: mode, failure_reason: classification[:failure_reason],
+                    response_classification: classification[:response_classification])
+      end
+
+      def handle_classification_failure(classification, mode)
+        return nil if classification[:failure_reason] == WebClassification::SUCCESS
+
+        Result.fail(classification_message(classification[:failure_reason]),
+                    fetch_mode: mode, failure_reason: classification[:failure_reason],
+                    response_classification: classification[:response_classification])
+      end
+
+      def classification_message(failure_reason, prefix: nil)
+        hint = case failure_reason
+               when WebClassification::AUTH_REQUIRED
+                 "Page requires authentication, login, a paywall, or CAPTCHA. " \
+                 "Inform the user and ask for access, credentials, or a different public URL."
+               when WebClassification::JS_REQUIRED
+                 "Page needs JavaScript to load content. Try web_research instead."
+               when WebClassification::TIMEOUT
+                 "Request timed out. Try web_research instead."
+               when WebClassification::RATE_LIMITED
+                 "Site rate limited the request. Wait before retrying or use web_research."
+               when WebClassification::BLOCKED_BOT
+                 "Site blocked the request. Try web_research instead."
+               else
+                 "Fetch blocked or content unavailable (#{failure_reason}). Try web_research instead."
+               end
+
+        return hint unless prefix
+
+        formatted_prefix = prefix.to_s.strip
+        formatted_prefix = "#{formatted_prefix}." unless formatted_prefix.end_with?(".", "!", "?")
+        "#{formatted_prefix} #{hint}"
       end
 
       def extract_text(html)

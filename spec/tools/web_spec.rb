@@ -11,6 +11,8 @@ RSpec.describe Homunculus::Tools::WebFetch do
     expect(tool.name).to eq("web_fetch")
     expect(tool.requires_confirmation).to be true
     expect(tool.trust_level).to eq(:mixed)
+    expect(tool.description).to include("If `web_research` is available in this session")
+    expect(tool.description).to include("Do not guess API endpoints")
   end
 
   it "fails when url is missing" do
@@ -136,8 +138,9 @@ RSpec.describe Homunculus::Tools::WebFetch do
         [instance_double(Addrinfo, ip_address: "93.184.216.34")]
       )
 
-      # Mock the actual HTTP request
-      response = instance_double(HTTPX::Response, status: 200, body: double(to_s: "<html><body>Hello</body></html>"))
+      # Body must be HTML with sufficient content (>= 100 chars) to pass minimal-body check
+      body = "<html><body><h1>Hello</h1><p>Example.com test page. Content must exceed minimal HTML threshold.</p></body></html>"
+      response = instance_double(HTTPX::Response, status: 200, body: double(to_s: body))
       http_client = instance_double(HTTPX::Session)
       allow(http_client).to receive_messages(get: response, with: http_client)
       allow(HTTPX).to receive(:plugin).and_return(http_client)
@@ -305,6 +308,124 @@ RSpec.describe Homunculus::Tools::WebFetch do
       result = tool.execute(arguments: { url: "http://example.com", mode: "raw" }, session:)
 
       expect(result.success).to be true
+    end
+  end
+
+  describe "response classification and structured metadata" do
+    before do
+      allow(Addrinfo).to receive(:getaddrinfo).and_return(
+        [instance_double(Addrinfo, ip_address: "93.184.216.34")]
+      )
+    end
+
+    it "returns fetch_mode and response_classification on success" do
+      html = "<html><head><title>Test</title></head><body><h1>Hello</h1><p>Content here for classification.</p></body></html>"
+      response = instance_double(HTTPX::Response, status: 200, body: double(to_s: html))
+      http_client = instance_double(HTTPX::Session)
+      allow(http_client).to receive_messages(get: response, with: http_client)
+      allow(HTTPX).to receive(:plugin).and_return(http_client)
+
+      result = tool.execute(arguments: { url: "http://example.com", mode: "extract_text" }, session:)
+
+      expect(result.success).to be true
+      expect(result.metadata[:fetch_mode]).to eq("extract_text")
+      expect(result.metadata[:response_classification]).to eq(Homunculus::Tools::WebClassification::SUCCESS)
+    end
+
+    it "returns failure_reason blocked_bot on 403" do
+      response = instance_double(HTTPX::Response, status: 403, body: double(to_s: "Forbidden"))
+      http_client = instance_double(HTTPX::Session)
+      allow(http_client).to receive_messages(get: response, with: http_client)
+      allow(HTTPX).to receive(:plugin).and_return(http_client)
+
+      result = tool.execute(arguments: { url: "http://example.com" }, session:)
+
+      expect(result.success).to be false
+      expect(result.metadata[:failure_reason]).to eq(Homunculus::Tools::WebClassification::BLOCKED_BOT)
+      expect(result.metadata[:response_classification]).to eq(Homunculus::Tools::WebClassification::BLOCKED_BOT)
+      expect(result.error).to include("Try web_research instead")
+    end
+
+    it "returns failure_reason rate_limited on 429" do
+      response = instance_double(HTTPX::Response, status: 429, body: double(to_s: "Too Many Requests"))
+      http_client = instance_double(HTTPX::Session)
+      allow(http_client).to receive_messages(get: response, with: http_client)
+      allow(HTTPX).to receive(:plugin).and_return(http_client)
+
+      result = tool.execute(arguments: { url: "http://example.com" }, session:)
+
+      expect(result.success).to be false
+      expect(result.metadata[:failure_reason]).to eq(Homunculus::Tools::WebClassification::RATE_LIMITED)
+      expect(result.error).to include("use web_research")
+    end
+
+    it "returns failure_reason auth_required when 200 body has login indicator" do
+      html = "<html><body>Please log in to continue</body></html>"
+      response = instance_double(HTTPX::Response, status: 200, body: double(to_s: html))
+      http_client = instance_double(HTTPX::Session)
+      allow(http_client).to receive_messages(get: response, with: http_client)
+      allow(HTTPX).to receive(:plugin).and_return(http_client)
+
+      result = tool.execute(arguments: { url: "http://example.com" }, session:)
+
+      expect(result.success).to be false
+      expect(result.metadata[:failure_reason]).to eq(Homunculus::Tools::WebClassification::AUTH_REQUIRED)
+      expect(result.error).to include("authentication")
+      expect(result.error).to include("Inform the user")
+    end
+
+    it "returns failure_reason js_required when 200 body is minimal" do
+      minimal = "<html><head></head><body></body></html>"
+      response = instance_double(HTTPX::Response, status: 200, body: double(to_s: minimal))
+      http_client = instance_double(HTTPX::Session)
+      allow(http_client).to receive_messages(get: response, with: http_client)
+      allow(HTTPX).to receive(:plugin).and_return(http_client)
+
+      result = tool.execute(arguments: { url: "http://example.com" }, session:)
+
+      expect(result.success).to be false
+      expect(result.metadata[:failure_reason]).to eq(Homunculus::Tools::WebClassification::JS_REQUIRED)
+      expect(result.error).to include("JavaScript")
+      expect(result.error).to include("Try web_research")
+    end
+
+    it "returns failure_reason timeout on timeout and includes fetch_mode" do
+      allow(Addrinfo).to receive(:getaddrinfo).and_return(
+        [instance_double(Addrinfo, ip_address: "93.184.216.34")]
+      )
+      http_client = instance_double(HTTPX::Session)
+      allow(http_client).to receive(:with).and_return(http_client)
+      allow(http_client).to receive(:get).and_raise(HTTPX::TimeoutError.new(30, "operation timed out"))
+      allow(HTTPX).to receive(:plugin).and_return(http_client)
+
+      result = tool.execute(arguments: { url: "http://example.com", mode: "raw" }, session:)
+
+      expect(result.success).to be false
+      expect(result.metadata[:failure_reason]).to eq(Homunculus::Tools::WebClassification::TIMEOUT)
+      expect(result.metadata[:fetch_mode]).to eq("raw")
+      expect(result.error).to include("Try web_research")
+    end
+  end
+
+  describe "user_agent configuration" do
+    it "uses default User-Agent when config has no override" do
+      tool_with_config = described_class.new(config: instance_double(Homunculus::Config,
+                                                                     tools: instance_double(Homunculus::ToolsConfig, web: nil)))
+      expect(tool_with_config.send(:user_agent)).to eq(Homunculus::Tools::WebFetch::DEFAULT_USER_AGENT)
+    end
+
+    it "uses a transparent default User-Agent without bot wording" do
+      expect(described_class::DEFAULT_USER_AGENT).to include("Homunculus")
+      expect(described_class::DEFAULT_USER_AGENT.downcase).not_to include("bot")
+    end
+
+    it "uses config user_agent_override when set" do
+      web_cfg = instance_double(Homunculus::WebConfig, user_agent_override: "Mozilla/5.0 (custom)")
+      tools_cfg = instance_double(Homunculus::ToolsConfig, web: web_cfg)
+      config = instance_double(Homunculus::Config, tools: tools_cfg)
+      tool_with_config = described_class.new(config: config)
+
+      expect(tool_with_config.send(:user_agent)).to eq("Mozilla/5.0 (custom)")
     end
   end
 
