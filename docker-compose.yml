@@ -13,6 +13,12 @@ services:
     volumes:
       - ./workspace:/app/workspace
       - homunculus-data:/app/data
+      # Docker socket for sandbox: agent spawns sibling containers via docker run
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Access to docker socket for sandbox. Default 999 matches common Linux docker group.
+    # Override: DOCKER_GID=$(stat -c '%g' /var/run/docker.sock) in .env
+    group_add:
+      - "${DOCKER_GID:-999}"
     networks:
       - homunculus-net
       - telegram-egress

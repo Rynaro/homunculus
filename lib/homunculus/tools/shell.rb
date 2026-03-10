@@ -2,6 +2,7 @@
 
 require "open3"
 require "shellwords"
+require "timeout"
 
 module Homunculus
   module Tools
@@ -10,11 +11,11 @@ module Homunculus
 
       tool_name "shell_exec"
       description <<~DESC.strip
-        Execute a shell command in a sandboxed Docker container.
-        The sandbox has: curl, jq, git, ripgrep, fd-find, python3, ruby.
-        Network access is disabled by default. Use 'network: true' for commands needing internet.
-        The working directory is /workspace (mounted read-only from agent workspace).
-        /tmp is writable for temporary files.
+        Execute a shell command in a bounded sandbox — security by default, power within limits.
+        Tools: curl, jq, git, ripgrep, fd-find, python3, ruby, awk, sed, less, file, xxd, date, which.
+        /workspace is read-only (agent workspace). /tmp is writable for temp files.
+        Network disabled by default; use 'network: true' for internet access (e.g. curl).
+        Ground analysis in artifacts; use evidence over speculation.
       DESC
       trust_level :untrusted
       requires_confirmation true
@@ -67,7 +68,7 @@ module Homunculus
       def docker_execute(command, timeout:, network:, workdir:)
         docker_cmd = build_docker_command(command, network:, workdir:)
 
-        stdout, stderr, status = Open3.capture3(*docker_cmd, timeout:)
+        stdout, stderr, status = Timeout.timeout(timeout) { Open3.capture3(*docker_cmd) }
 
         stdout = truncate_output(stdout)
         stderr = truncate_output(stderr)
@@ -83,7 +84,7 @@ module Homunculus
       end
 
       def local_execute(command, timeout:)
-        stdout, stderr, status = Open3.capture3("/bin/sh", "-c", command, timeout:)
+        stdout, stderr, status = Timeout.timeout(timeout) { Open3.capture3("/bin/sh", "-c", command) }
 
         stdout = truncate_output(stdout)
         stderr = truncate_output(stderr)

@@ -180,14 +180,14 @@ Each entry includes:
 - Hashed inputs/outputs (SHA-256, truncated to 16 chars)
 - Token counts and duration
 
-### Sandbox (`lib/homunculus/security/sandbox.rb`)
+### Sandbox (`lib/homunculus/tools/shell.rb`, `Dockerfile.sandbox`)
 
-Docker-based execution sandbox for shell commands:
-- Network mode: `none` (no internet access)
-- Read-only root filesystem
-- All Linux capabilities dropped
-- Memory limit: 512 MB, CPU limit: 1.0
-- 30-second timeout per command
+Bounded playground for shell execution — security by default, power within limits:
+- Network mode: `none` by default (opt-in via `network: true` for curl)
+- Read-only root filesystem, writable `/tmp`
+- All Linux capabilities dropped, `no-new-privileges`
+- Memory limit: 512 MB, CPU limit: 1.0, 30–120s timeout
+- Tools: curl, jq, git, ripgrep, fd-find, python3, ruby, awk, sed, less, file, xxd, date, which
 - Blocked command patterns checked before execution
 
 ### Scheduler (`lib/homunculus/scheduler/`)

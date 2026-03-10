@@ -1,0 +1,109 @@
+# Shell Timeout Fix — Agent Handoff
+# SPECTRA ASSEMBLE output — 2026-03-10
+# Coder agent: execute stories 1–3 in order; validate with bin/dev test + bin/dev lint
+
+metadata:
+  plan_id: 2026-03-10-shell-timeout-fix
+  date: "2026-03-10"
+  intent_type: BUG_SPEC
+  complexity: 4
+  confidence: 95
+  decision: AUTO_PROCEED
+  source_plan: plans/2026-03-10-shell-timeout-fix.md
+
+execution_plan:
+  sequence: [1, 2, 3]
+  optional_sequence: [4]
+  final_validation:
+    - bin/dev lint
+    - bin/dev test
+  coverage_floor: 75
+
+stories:
+  - id: "1"
+    title: "shell.rb — Replace Open3 timeout: with Timeout.timeout wrapper"
+    timebox: "1d"
+    risk_tag: P0
+    agent_hint: Builder
+    context_files:
+      - lib/homunculus/tools/shell.rb
+      - lib/homunculus/agent/loop.rb
+    action_plan:
+      - Add require "timeout" to lib/homunculus/tools/shell.rb
+      - In docker_execute (line 70): Replace Open3.capture3(*docker_cmd, timeout:) with Timeout.timeout(timeout) { Open3.capture3(*docker_cmd) }
+      - In local_execute (line 86): Replace Open3.capture3("/bin/sh", "-c", command, timeout:) with Timeout.timeout(timeout) { Open3.capture3("/bin/sh", "-c", command) }
+      - Keep all rescue Timeout::Error blocks unchanged
+    acceptance_criteria:
+      - "GIVEN shell tool with sandbox enabled"
+      - "WHEN execute runs"
+      - "THEN Open3.capture3 receives no timeout: kwarg and is wrapped in Timeout.timeout(timeout)"
+      - "GIVEN same with sandbox disabled"
+      - "THEN same pattern for local_execute"
+      - "GIVEN Timeout.timeout raises Timeout::Error"
+      - "THEN existing rescue returns Result.fail with timed_out: true"
+    validation_gate: bin/dev test spec/tools/shell_spec.rb
+
+  - id: "2"
+    title: "sandbox.rb — Replace Open3 timeout: with Timeout.timeout wrapper"
+    timebox: "1d"
+    risk_tag: P0
+    agent_hint: Builder
+    context_files:
+      - lib/homunculus/security/sandbox.rb
+      - lib/homunculus/tools/shell.rb
+    action_plan:
+      - Add require "timeout" to lib/homunculus/security/sandbox.rb
+      - In docker_execute (line 48): Replace Open3.capture3(*docker_cmd, timeout:) with Timeout.timeout(timeout) { Open3.capture3(*docker_cmd) }
+      - In local_execute (line 61): Replace Open3.capture3(command, timeout:) with Timeout.timeout(timeout) { Open3.capture3(command) }
+      - Keep all rescue Timeout::Error blocks unchanged
+    acceptance_criteria:
+      - "GIVEN Sandbox#execute with sandbox enabled"
+      - "WHEN execute runs"
+      - "THEN Open3.capture3 receives no timeout: kwarg, wrapped in Timeout.timeout"
+      - "GIVEN sandbox disabled"
+      - "THEN same for local_execute"
+      - "GIVEN Timeout::Error raised"
+      - "THEN return hash includes timed_out: true"
+    validation_gate: bin/dev test
+
+  - id: "3"
+    title: "shell_spec.rb — Update stubs for Timeout.timeout pattern"
+    timebox: "≤1d"
+    risk_tag: P1
+    agent_hint: Builder
+    context_files:
+      - spec/tools/shell_spec.rb
+      - lib/homunculus/tools/shell.rb
+    action_plan:
+      - Line 264 (local execution): Change stub from .with("/bin/sh", "-c", "echo test", timeout: 30) to .with("/bin/sh", "-c", "echo test"); ensure Timeout.timeout yields so Open3.capture3 stub is invoked
+      - Lines 202-222 (timeout handling): For "kills container after timeout" — stub Timeout.timeout to raise Timeout::Error (or allow normal flow with Open3 stub)
+      - For "caps timeout at 120 seconds" — stub Timeout.timeout to capture the timeout value; expect(timeout_used).to eq(120)
+      - For "defaults timeout to 30 seconds" — same; expect(timeout_used).to eq(30)
+      - Ensure all Open3.capture3 stubs no longer expect timeout: kwarg
+    acceptance_criteria:
+      - "GIVEN updated spec/tools/shell_spec.rb"
+      - "WHEN bin/dev test spec/tools/shell_spec.rb runs"
+      - "THEN all examples pass"
+      - "GIVEN timeout handling examples"
+      - "THEN Timeout::Error path and timeout value assertions work"
+    validation_gate: bin/dev test spec/tools/shell_spec.rb
+    notes:
+      - "Reference: lib/homunculus/agent/loop.rb line 481 uses Timeout.timeout; spec/agent/loop_spec.rb line 425 stubs allow(Timeout).to receive(:timeout).and_raise(Timeout::Error)"
+
+  - id: "4"
+    title: "sandbox_spec.rb — Add timeout specs (optional)"
+    timebox: "1d"
+    risk_tag: P2
+    agent_hint: Builder
+    context_files:
+      - lib/homunculus/security/sandbox.rb
+    action_plan:
+      - Create spec/security/sandbox_spec.rb if missing
+      - Add examples: success path, timeout path (stub Timeout.timeout to raise)
+      - Verify Open3.capture3 called without timeout: kwarg
+    acceptance_criteria:
+      - "GIVEN sandbox execute with stubs"
+      - "WHEN Timeout.timeout raises Timeout::Error"
+      - "THEN result has timed_out: true"
+    validation_gate: bin/dev test spec/security/sandbox_spec.rb
+    defer: true

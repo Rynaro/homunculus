@@ -153,6 +153,14 @@ This prints the resolved gateway address, model names, and workspace path.
 
 See [configuration.md](configuration.md) for the full reference.
 
+## Shell execution and sandbox
+
+Shell commands (`shell_exec`) run in a Docker sandbox by default. The agent container needs access to the host Docker daemon to spawn sandbox containers.
+
+- **Docker deployment**: The agent image includes the Docker CLI and mounts `/var/run/docker.sock`. Use `bin/assistant up --with-sandbox --build` to build the sandbox image.
+- **Troubleshooting**: If you see "No such file or directory - docker", rebuild the agent image: `docker compose build homunculus-agent`.
+- **"Unable to find group docker"**: The compose file uses numeric GID 999 by default. If your host's docker group differs, set `DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)` in `.env` (Linux) or `DOCKER_GID=999` if that matches.
+
 ## Ollama in Docker (optional)
 
 By default, Homunculus expects Ollama running on the host (reachable at `http://host.docker.internal:11434` from inside Docker, or `http://localhost:11434` when running natively).

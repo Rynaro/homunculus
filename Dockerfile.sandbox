@@ -1,18 +1,29 @@
+# Homunculus sandbox — a bounded playground for the assistant.
+# Security by default: no network, no caps, read-only. Power within limits.
 FROM ruby:4.0-slim
 
 ENV LANG=C.UTF-8
 
-# Install only essential tools — no package manager retained
+# Core utilities (date, which, etc.) — required for shell_exec and safe_commands
+# Text/data: awk, sed, less — evidence-based inspection and parsing
+# Scripting: python3 — amplify capabilities (JSON, CSV, quick scripts)
+# Inspection: file, xxd — ground analysis in artifacts
+# Network (opt-in via tool param): curl — web_fetch alternative for simple GET
+# Search/nav: jq, git, ripgrep, fd-find — internal-first, workspace discovery
+# No package manager retained — no apt/pip at runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    coreutils debianutils \
+    gawk sed less file xxd \
+    python3-minimal \
     curl jq git ripgrep fd-find \
     && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
-# Disable shell history
+# Disable shell history — audit trail lives in Homunculus, not shells
 ENV HISTFILE=/dev/null
 ENV LESSHSTFILE=/dev/null
 
-# Use existing nobody user (UID 65534) — do not create a new user
+# Unprivileged execution — nobody (UID 65534)
 RUN mkdir -p /workspace && chown 65534:65534 /workspace
 
 USER 65534

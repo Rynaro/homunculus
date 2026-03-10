@@ -49,7 +49,7 @@ preread_workspace_files = true
 
 [tools]
 approval_mode = "elevated"  # off | elevated | always
-safe_commands = ["ls", "cat", "grep", "find", "wc", "head", "tail", "date", "echo", "pwd"]
+safe_commands = ["ls", "cat", "grep", "find", "wc", "head", "tail", "date", "echo", "pwd", "file", "which", "awk", "sed"]
 blocked_patterns = ["rm -rf /", "mkfs", "dd if=", "> /dev/"]
 
 [tools.web]
