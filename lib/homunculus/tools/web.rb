@@ -322,6 +322,11 @@ module Homunculus
       def handle_classification_failure(classification, mode)
         return nil if classification[:failure_reason] == WebClassification::SUCCESS
 
+        if mode == "raw"
+          body_based = [WebClassification::INCOMPLETE_HTML, WebClassification::JS_REQUIRED, WebClassification::AUTH_REQUIRED]
+          return nil if body_based.include?(classification[:failure_reason])
+        end
+
         Result.fail(classification_message(classification[:failure_reason]),
                     fetch_mode: mode, failure_reason: classification[:failure_reason],
                     response_classification: classification[:response_classification])

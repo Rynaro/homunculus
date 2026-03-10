@@ -1,0 +1,109 @@
+# CI Stability Fix — Agent Handoff
+# SPECTRA ASSEMBLE output — 2026-03-10
+# Coder agent: execute stories in order; validate with bin/dev test + bin/dev lint
+
+metadata:
+  plan_id: 2026-03-10-ci-stability-fix
+  date: "2026-03-10"
+  intent_type: BUG_SPEC
+  complexity: 4
+  confidence: 85
+  decision: AUTO_PROCEED
+  source_plan: plans/2026-03-10-ci-stability-fix.md
+
+execution_plan:
+  sequence: [1, 2, 3, 4]
+  final_validation:
+    - bin/dev lint
+    - bin/dev test
+  coverage_floor: 75
+
+stories:
+  - id: "1"
+    title: "Linter — Layout/EmptyLineAfterGuardClause"
+    timebox: "1d"
+    risk_tag: P2
+    agent_hint: Builder
+    context_files:
+      - lib/homunculus/tools/web_strategy.rb
+    action_plan:
+      - Modify lib/homunculus/tools/web_strategy.rb
+      - Add blank line after guard clause at line 69 (return false if u.empty?)
+    acceptance_criteria:
+      - "GIVEN web_strategy.rb with guard at line 69"
+      - "WHEN bin/dev lint runs"
+      - "THEN zero offenses; Layout/EmptyLineAfterGuardClause satisfied"
+    validation_gate: bin/dev lint
+
+  - id: "2"
+    title: "WebClassification — Reorder classify_200_body checks"
+    timebox: "≤2d"
+    risk_tag: P1
+    agent_hint: Builder
+    context_files:
+      - lib/homunculus/tools/web_classification.rb
+    action_plan:
+      - In lib/homunculus/tools/web_classification.rb, reorder classify_200_body
+      - Check auth_indicators_match?(text) first → AUTH_REQUIRED
+      - Check js_required?(body) second → JS_REQUIRED
+      - Check body.length < MIN_BODY_THRESHOLD third → INCOMPLETE_HTML
+      - Else → SUCCESS
+      - Preserve exact semantics of each predicate
+    acceptance_criteria:
+      - "GIVEN 200 response with body containing 'Please log in' (length < 100)"
+      - "WHEN classify_200_body called"
+      - "THEN failure_reason is AUTH_REQUIRED"
+      - "GIVEN 200 response with minimal HTML skeleton, length < 100"
+      - "WHEN classify_200_body called"
+      - "THEN failure_reason is JS_REQUIRED"
+      - "GIVEN 200 response, no auth, not js_required, body < 100"
+      - "WHEN classify_200_body called"
+      - "THEN failure_reason is INCOMPLETE_HTML"
+    validation_gate: bin/dev test spec/tools/web_spec.rb
+    contingency:
+      - "If 'HTML extraction strips HTML tags' still fails"
+      - "Refine js_required? to exclude bodies with substantial text (≥50 chars after tag-strip)"
+
+  - id: "3"
+    title: "WebFetch — Skip body-based classification failure for raw mode"
+    timebox: "≤2d"
+    risk_tag: P1
+    agent_hint: Builder
+    context_files:
+      - lib/homunculus/tools/web.rb
+    action_plan:
+      - In lib/homunculus/tools/web.rb, inside handle_classification_failure
+      - When mode == 'raw' AND failure_reason in [INCOMPLETE_HTML, JS_REQUIRED, AUTH_REQUIRED]
+      - Return nil (no failure)
+      - For BLOCKED_BOT, RATE_LIMITED, TIMEOUT retain current behavior
+    acceptance_criteria:
+      - "GIVEN mode 'raw', 200, body 'ok' (2 chars) → result.success true"
+      - "GIVEN mode 'raw', 200, body small JSON → result.success true"
+      - "GIVEN mode 'raw', 403 → result.success false, failure_reason BLOCKED_BOT"
+      - "GIVEN mode 'extract_text', 200, body 'ok' (2 chars) → result.success false, INCOMPLETE_HTML"
+    validation_gate: bin/dev test spec/tools/web_spec.rb
+
+  - id: "4"
+    title: "CLI warmup spec — Disable SAG to avoid net connect"
+    timebox: "1d"
+    risk_tag: P2
+    agent_hint: Builder
+    context_files:
+      - spec/interfaces/cli_warmup_spec.rb
+      - config/default.toml
+    action_plan:
+      - In spec/interfaces/cli_warmup_spec.rb let(:config) block
+      - Add raw['sag'] = { 'enabled' => false }
+    acceptance_criteria:
+      - "GIVEN config with sag.enabled = false"
+      - "WHEN CLI.new(config:) invoked"
+      - "THEN no real HTTP to host.docker.internal:8888/healthz"
+      - "WHEN bin/dev test spec/interfaces/cli_warmup_spec.rb"
+      - "THEN all pass; no WebMock::NetConnectNotAllowedError"
+    validation_gate: bin/dev test spec/interfaces/cli_warmup_spec.rb
+
+state:
+  session_id: 2026-03-10-ci-stability-fix
+  status: READY
+  per_story_status: {}
+  replanning_history: []

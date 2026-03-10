@@ -10,6 +10,7 @@ RSpec.describe Homunculus::Interfaces::CLI do
   let(:config) do
     raw = TomlRB.load_file("config/default.toml")
     raw["agent"] = { "workspace_path" => workspace_dir }
+    raw["sag"] = { "enabled" => false }
     raw["scheduler"] = {
       "enabled" => false,
       "db_path" => File.join(db_dir, "scheduler.db"),
@@ -80,6 +81,7 @@ RSpec.describe Homunculus::Interfaces::CLI do
           "workspace_path" => workspace_dir,
           "warmup" => { "enabled" => false }
         }
+        raw["sag"] = { "enabled" => false }
         raw["scheduler"] = {
           "enabled" => false,
           "db_path" => File.join(db_dir, "scheduler.db"),
