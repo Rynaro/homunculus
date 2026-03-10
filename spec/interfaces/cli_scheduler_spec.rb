@@ -38,6 +38,9 @@ RSpec.describe Homunculus::Interfaces::CLI do
 
     # Stub Sequel to use in-memory databases
     allow(Sequel).to receive(:sqlite) { Sequel.connect("sqlite:/") }
+    allow(Homunculus::SAG::SearchBackend::SearXNG).to receive(:new).and_return(
+      instance_double(Homunculus::SAG::SearchBackend::SearXNG, available?: false)
+    )
   end
 
   after do

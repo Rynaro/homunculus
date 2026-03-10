@@ -125,8 +125,12 @@ max_message_length = 4096
 typing_indicator = true
 
 [sag]
-enabled = false
-searxng_url = "http://localhost:8888"
+# SAG powers the web_research tool and depends on a reachable SearXNG instance.
+# To enable it, start/configure SearXNG at searxng_url and set enabled = true.
+# host.docker.internal = SearXNG on host. For SearXNG in Docker (searxng profile), set SEARXNG_URL=http://searxng:8080 in .env
+# When disabled, interfaces log that web_research is unavailable for the session.
+enabled = true
+searxng_url = "http://host.docker.internal:8888"
 searxng_categories = ["general"]
 top_n_results = 5
 deep_fetch = false

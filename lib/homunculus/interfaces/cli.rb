@@ -5,11 +5,13 @@ require "fileutils"
 require_relative "../agent/warmup"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
+require_relative "sag_reachability"
 
 module Homunculus
   module Interfaces
     class CLI
       include SemanticLogger::Loggable
+      include SAGReachability
 
       BANNER = <<~BANNER
         🧪 Homunculus v%<version>s — Personal AI Agent
@@ -64,6 +66,7 @@ module Homunculus
         end
 
         @tool_registry = build_tool_registry
+        warn_sag_disabled unless @config.sag.enabled
         @prompt_builder = Agent::PromptBuilder.new(
           workspace_path: @config.agent.workspace_path,
           tool_registry: @tool_registry,
@@ -183,6 +186,7 @@ module Homunculus
                         SAG::LLMAdapter.new(provider: @provider)
                       end
         return unless llm_adapter
+        return unless sag_backend_available?(logger, @config)
 
         factory = SAG::PipelineFactory.new(
           config: @config.sag,
@@ -192,6 +196,10 @@ module Homunculus
         logger.info("SAG web_research tool registered")
       rescue StandardError => e
         logger.warn("SAG tool registration failed — web_research unavailable", error: e.message)
+      end
+
+      def warn_sag_disabled
+        logger.warn("SAG disabled in config — web_research unavailable until [sag].enabled is true and SearXNG is configured")
       end
 
       def build_memory_store

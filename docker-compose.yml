@@ -50,6 +50,26 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Optional: SearXNG running as a Docker service.
+  # Start with: docker compose --profile searxng up -d
+  # REQUIRED: Add SEARXNG_URL=http://searxng:8080 to .env — without it,
+  # Homunculus will timeout trying to reach SearXNG via host.docker.internal.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: homunculus-searxng
+    profiles:
+      - searxng
+    volumes:
+      - ./config/searxng:/etc/searxng:rw
+    networks:
+      - homunculus-net
+      - searxng-egress
+    ports:
+      - "127.0.0.1:8888:8080"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   homunculus-sandbox:
     build:
       context: .
@@ -78,6 +98,8 @@ networks:
     driver: bridge  # Allows outbound to Telegram API
   ollama-egress:
     driver: bridge  # Allows Ollama to pull models from registry.ollama.ai
+  searxng-egress:
+    driver: bridge  # Allows SearXNG to reach external search engines
 
 volumes:
   homunculus-data:

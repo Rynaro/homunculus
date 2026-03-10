@@ -35,6 +35,9 @@ RSpec.describe Homunculus::Interfaces::Telegram do
     # Return in-memory SQLite databases instead of file-based ones.
     # This avoids filesystem hits while keeping both memory store and budget tracker functional.
     allow(Sequel).to receive(:sqlite) { Sequel.connect("sqlite:/") }
+    allow(Homunculus::SAG::SearchBackend::SearXNG).to receive(:new).and_return(
+      instance_double(Homunculus::SAG::SearchBackend::SearXNG, available?: false)
+    )
   end
 
   # ── Initialization ─────────────────────────────────────────────
@@ -240,6 +243,32 @@ RSpec.describe Homunculus::Interfaces::Telegram do
       new_entry = adapter.send(:session_entry_for, 42)
       # New session starts fresh with auto routing
       expect(new_entry.session.forced_provider).to be_nil
+    end
+  end
+
+  # ── SAG / SearXNG reachability gate ─────────────────────────────
+
+  describe "SAG web_research registration with SearXNG availability" do
+    it "does not register web_research when SearXNG is unavailable" do
+      tool_names = adapter.instance_variable_get(:@tool_registry).tool_names
+      expect(tool_names).not_to include("web_research")
+    end
+
+    it "registers web_research when SearXNG is available" do
+      allow(Homunculus::SAG::SearchBackend::SearXNG).to receive(:new).and_return(
+        instance_double(Homunculus::SAG::SearchBackend::SearXNG, available?: true)
+      )
+
+      config = Homunculus::Config.new(
+        TomlRB.load_file("config/default.toml").tap do |raw|
+          raw["interfaces"] ||= {}
+          raw["interfaces"]["telegram"] = telegram_raw
+        end
+      )
+
+      instance = described_class.new(config:)
+      tool_names = instance.instance_variable_get(:@tool_registry).tool_names
+      expect(tool_names).to include("web_research")
     end
   end
 

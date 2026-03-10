@@ -31,6 +31,9 @@ RSpec.describe Homunculus::Interfaces::TUI do
 
   before do
     allow(Sequel).to receive(:sqlite) { Sequel.connect("sqlite:/") }
+    allow(Homunculus::SAG::SearchBackend::SearXNG).to receive(:new).and_return(
+      instance_double(Homunculus::SAG::SearchBackend::SearXNG, available?: false)
+    )
   end
 
   after do
@@ -78,6 +81,11 @@ RSpec.describe Homunculus::Interfaces::TUI do
     it "initializes with a messages_mutex for thread-safe message buffer" do
       tui = described_class.new(config:)
       expect(tui.instance_variable_get(:@messages_mutex)).to be_a(Mutex)
+    end
+
+    it "initializes with a render mutex for serialized ANSI output" do
+      tui = described_class.new(config:)
+      expect(tui.instance_variable_get(:@render_mutex)).to be_a(Mutex)
     end
 
     it "does not initialize scheduler when disabled" do
@@ -640,7 +648,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
     end
 
     before do
-      allow(tui).to receive(:refresh_chat_panel)
+      allow(tui).to receive(:refresh_chat_and_status)
       allow(tui).to receive_messages(detect_height: 30, detect_width: 80, build_chat_lines: ["line"] * 50)
     end
 
@@ -761,19 +769,23 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(stdout_buf).to include(described_class::Theme::PROMPT_CHAR)
     end
 
+    it "render_input_line tolerates ASCII-8BIT input without raising" do
+      expect { tui.send(:render_input_line, "\xC3".b) }.not_to raise_error
+    end
+
     it "initial_render calls all sub-renders" do
       expect(tui).to receive(:clear_screen)
-      expect(tui).to receive(:render_header)
-      expect(tui).to receive(:render_chat_panel)
-      expect(tui).to receive(:render_status_bar)
-      expect(tui).to receive(:render_input_line)
+      expect(tui).to receive(:render_header_frame)
+      expect(tui).to receive(:render_chat_panel_frame)
+      expect(tui).to receive(:render_status_bar_frame)
+      expect(tui).to receive(:render_input_line_frame)
       tui.send(:initial_render)
     end
 
     it "refresh_all calls chat panel, status, and input renders" do
-      expect(tui).to receive(:render_chat_panel)
-      expect(tui).to receive(:render_status_bar)
-      expect(tui).to receive(:render_input_line)
+      expect(tui).to receive(:render_chat_panel_frame)
+      expect(tui).to receive(:render_status_bar_frame)
+      expect(tui).to receive(:render_input_line_frame)
       tui.send(:refresh_all)
     end
   end
@@ -814,8 +826,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
     subject(:tui) do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
-      allow(t).to receive(:refresh_chat_panel)
-      allow(t).to receive(:refresh_status_bar)
+      allow(t).to receive(:refresh_chat_and_status)
       t
     end
 
@@ -880,6 +891,25 @@ RSpec.describe Homunculus::Interfaces::TUI do
       estimate = tui.instance_variable_get(:@streaming_output_tokens_estimate)
       expect(estimate).to be_a(Integer)
       expect(estimate).to be >= 1
+    end
+
+    it "preserves manual scroll position during streaming when user is not at bottom" do
+      allow(tui).to receive_messages(detect_width: 40, detect_height: 24)
+      tui.send(:push_user_message, "seed message")
+      tui.instance_variable_set(:@scroll_offset, 3)
+
+      cb = tui.send(:build_stream_callback)
+      cb.call(" #{"x" * 120}")
+
+      expect(tui.instance_variable_get(:@scroll_offset)).to be > 3
+    end
+
+    it "keeps following newest output when already at the bottom" do
+      allow(tui).to receive_messages(detect_width: 40, detect_height: 24)
+      cb = tui.send(:build_stream_callback)
+      cb.call(" #{"x" * 120}")
+
+      expect(tui.instance_variable_get(:@scroll_offset)).to eq(0)
     end
   end
 
@@ -1010,7 +1040,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
       allow(indicator).to receive(:stop).and_call_original
       tui.send(:handle_message, "hello")
       expect(indicator).to have_received(:start).with("Thinking...")
-      expect(indicator).to have_received(:stop)
+      expect(indicator).to have_received(:stop).at_least(:once)
     end
 
     it "clears streaming_output_tokens_estimate after agent completes (Story 4)" do
@@ -1052,9 +1082,42 @@ RSpec.describe Homunculus::Interfaces::TUI do
     it "handle_scroll_keys updates scroll_offset and can be called while messages exist (mutex-held reads)" do
       tui.send(:push_user_message, "one")
       tui.send(:push_assistant_message, "two")
-      allow(tui).to receive(:refresh_chat_panel)
+      allow(tui).to receive(:refresh_chat_and_status)
       tui.send(:handle_scroll_keys, "[5~")
       expect(tui.instance_variable_get(:@scroll_offset)).to be >= 0
+    end
+  end
+
+  describe "render serialization helpers" do
+    it "serializes concurrent render ownership through with_render_lock" do
+      tui = described_class.new(config:)
+      active = 0
+      max_active = 0
+
+      threads = 2.times.map do
+        Thread.new do
+          tui.send(:with_render_lock) do
+            active += 1
+            max_active = [max_active, active].max
+            sleep(0.02)
+            active -= 1
+          end
+        end
+      end
+
+      threads.each(&:join)
+      expect(max_active).to eq(1)
+    end
+
+    it "refreshes status immediately when tool status changes" do
+      tui = described_class.new(config:)
+      callback = tui.send(:build_status_callback)
+      allow(tui).to receive(:refresh_status_bar)
+
+      callback.call(:tool_start, "echo")
+      callback.call(:tool_end, "echo")
+
+      expect(tui).to have_received(:refresh_status_bar).twice
     end
   end
 

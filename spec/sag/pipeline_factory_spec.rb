@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "../../lib/homunculus/sag/llm_adapter"
 require_relative "../../lib/homunculus/sag/pipeline_factory"
 
 RSpec.describe Homunculus::SAG::PipelineFactory do

@@ -7,12 +7,14 @@ require_relative "telegram/memory_curation"
 require_relative "telegram/warmup_integration"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
+require_relative "sag_reachability"
 
 module Homunculus
   module Interfaces
     class Telegram
       include SemanticLogger::Loggable
       include MemoryCuration
+      include SAGReachability
       include WarmupIntegration
 
       # Per-chat session entry
@@ -59,8 +61,6 @@ module Homunculus
 
       private
 
-      # ── Component Setup ──────────────────────────────────────────────
-
       def setup_components!
         @audit = Security::AuditLogger.new(@config.security.audit_log_path)
         @memory_store = build_memory_store
@@ -73,6 +73,7 @@ module Homunculus
         end
 
         @tool_registry = build_tool_registry
+        warn_sag_disabled unless @config.sag.enabled
 
         # Multi-agent manager (loads workspace/agents/)
         workspace_path = @config.agent.workspace_path
@@ -157,8 +158,6 @@ module Homunculus
         service
       end
 
-      # Chat IDs to deliver scheduled notifications to.
-      # Uses the allowed_user_ids as the notification targets.
       def delivery_targets
         @allowed_users.to_a
       end
@@ -184,7 +183,6 @@ module Homunculus
           registry.register(Tools::MemoryDailyLog.new(memory_store: @memory_store))
           registry.register(Tools::MemoryCurate.new(memory_store: @memory_store))
         end
-
         register_sag_tool(registry) if @config.sag.enabled
         registry
       end
@@ -192,6 +190,7 @@ module Homunculus
       def register_sag_tool(registry)
         ollama_provider = @providers[:ollama]
         return unless ollama_provider
+        return unless sag_backend_available?(logger, @config)
 
         llm_adapter = SAG::LLMAdapter.new(provider: ollama_provider)
         factory = SAG::PipelineFactory.new(
@@ -202,6 +201,10 @@ module Homunculus
         logger.info("SAG web_research tool registered")
       rescue StandardError => e
         logger.warn("SAG tool registration failed — web_research unavailable", error: e.message)
+      end
+
+      def warn_sag_disabled
+        logger.warn("SAG disabled in config — web_research unavailable until [sag].enabled is true and SearXNG is configured")
       end
 
       def build_memory_store
