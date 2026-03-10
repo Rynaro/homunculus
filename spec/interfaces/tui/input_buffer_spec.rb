@@ -47,6 +47,15 @@ RSpec.describe Homunculus::Interfaces::TUI::InputBuffer do
       buffer.insert("")
       expect(buffer.to_s).to eq("a")
     end
+
+    it "normalizes ASCII-8BIT input to valid UTF-8" do
+      binary = "\xC3".b
+
+      buffer.insert(binary)
+
+      expect(buffer.to_s.encoding).to eq(Encoding::UTF_8)
+      expect(buffer.to_s).to eq("\uFFFD")
+    end
   end
 
   describe "#backspace" do

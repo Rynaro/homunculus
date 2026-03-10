@@ -15,7 +15,7 @@ module Homunculus
         def insert(char)
           return if char.nil? || char.to_s.empty?
 
-          c = char.to_s
+          c = normalize_input(char)
           @buf.insert(@cursor, c)
           @cursor = clamp_cursor(@cursor + c.length)
         end
@@ -92,6 +92,14 @@ module Homunculus
         end
 
         private
+
+        def normalize_input(char)
+          text = char.to_s.dup
+          return text if text.encoding == Encoding::UTF_8 && text.valid_encoding?
+
+          text.force_encoding(Encoding::UTF_8)
+          text.scrub
+        end
 
         def clamp_cursor(pos)
           pos.clamp(0, @buf.length)
