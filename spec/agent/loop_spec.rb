@@ -390,4 +390,67 @@ RSpec.describe Homunculus::Agent::Loop do
       end
     end
   end
+
+  describe "tool status callbacks" do
+    it "pairs tool_start and tool_end on success" do
+      status_callback = instance_double(Proc, call: nil)
+      loop_with_status_callback = described_class.new(
+        config:,
+        provider:,
+        tools: tool_registry,
+        prompt_builder:,
+        audit:,
+        status_callback:
+      )
+      tool_call = make_tool_call(name: "echo", arguments: { text: "hello" })
+      allow(tool_registry).to receive(:execute).and_return(Homunculus::Tools::Result.ok("hello"))
+
+      loop_with_status_callback.send(:execute_tool, tool_call, session)
+
+      expect(status_callback).to have_received(:call).with(:tool_start, "echo").ordered
+      expect(status_callback).to have_received(:call).with(:tool_end, "echo").ordered
+    end
+
+    it "pairs tool_start and tool_end when the tool times out" do
+      status_callback = instance_double(Proc, call: nil)
+      loop_with_status_callback = described_class.new(
+        config:,
+        provider:,
+        tools: tool_registry,
+        prompt_builder:,
+        audit:,
+        status_callback:
+      )
+      tool_call = make_tool_call(name: "echo", arguments: { text: "hello" })
+      allow(Timeout).to receive(:timeout).and_raise(Timeout::Error)
+
+      result = loop_with_status_callback.send(:execute_tool, tool_call, session)
+
+      expect(result.success).to be false
+      expect(result.error).to include("timed out")
+      expect(status_callback).to have_received(:call).with(:tool_start, "echo").ordered
+      expect(status_callback).to have_received(:call).with(:tool_end, "echo").ordered
+    end
+
+    it "pairs tool_start and tool_end when the tool raises" do
+      status_callback = instance_double(Proc, call: nil)
+      loop_with_status_callback = described_class.new(
+        config:,
+        provider:,
+        tools: tool_registry,
+        prompt_builder:,
+        audit:,
+        status_callback:
+      )
+      tool_call = make_tool_call(name: "echo", arguments: { text: "hello" })
+      allow(tool_registry).to receive(:execute).and_raise(StandardError, "boom")
+
+      result = loop_with_status_callback.send(:execute_tool, tool_call, session)
+
+      expect(result.success).to be false
+      expect(result.error).to include("Tool error: boom")
+      expect(status_callback).to have_received(:call).with(:tool_start, "echo").ordered
+      expect(status_callback).to have_received(:call).with(:tool_end, "echo").ordered
+    end
+  end
 end

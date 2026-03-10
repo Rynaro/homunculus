@@ -9,7 +9,9 @@ module Homunculus
     class WebExtract < Base
       tool_name "web_extract"
       description <<~DESC.strip
-        Extract structured data from a web page using CSS selectors.
+        Extract structured data from a specific URL that you already know works using CSS selectors.
+        Use this when you have a known page and need structured extraction, not discovery.
+        NOT for discovering information or answering factual lookup questions from scratch.
         Returns a JSON object mapping selector names to extracted text values.
         Dramatically reduces raw HTML in context compared to web_fetch.
         Network access is required. Only HTTP/HTTPS URLs are allowed.
@@ -47,7 +49,15 @@ module Homunculus
         # Fetch the page HTML using a WebFetch instance (reuses SSRF/rate-limit infra)
         fetcher = @web_fetch || WebFetch.new(config: @config)
         fetch_result = fetcher.execute(arguments: { url: url, mode: "raw" }, session: session)
-        return Result.fail("Fetch failed: #{fetch_result.error}") unless fetch_result.success
+        unless fetch_result.success
+          meta = {}
+          meta[:failure_reason] = fetch_result.metadata[:failure_reason] if fetch_result.metadata&.key?(:failure_reason)
+          if fetch_result.metadata&.key?(:response_classification)
+            meta[:response_classification] =
+              fetch_result.metadata[:response_classification]
+          end
+          return Result.fail("Fetch failed: #{fetch_result.error}", **meta)
+        end
 
         html = fetch_result.output
         extracted = extract_with_selectors(html, selectors)

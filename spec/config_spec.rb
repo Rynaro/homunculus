@@ -55,9 +55,36 @@ RSpec.describe Homunculus::Config do
       expect(config.models[:local].base_url).to eq("http://ollama:11434")
     end
 
+    it "overrides SAG searxng_url from SEARXNG_URL" do
+      allow(ENV).to receive(:key?).and_call_original
+      allow(ENV).to receive(:fetch).and_call_original
+      allow(ENV).to receive(:key?).with("SEARXNG_URL").and_return(true)
+      allow(ENV).to receive(:fetch).with("SEARXNG_URL").and_return("http://searxng:8080")
+
+      config = described_class.load("config/default.toml")
+      expect(config.sag.searxng_url).to eq("http://searxng:8080")
+    end
+
     it "loads agent configuration" do
       expect(config.agent.max_turns).to eq(25)
       expect(config.agent.max_execution_time_seconds).to eq(300)
+    end
+
+    it "loads warmup configuration with defaults" do
+      warmup = config.agent.warmup
+      expect(warmup.enabled).to be(true)
+      expect(warmup.preload_chat_model).to be(true)
+      expect(warmup.preload_embedding_model).to be(true)
+      expect(warmup.preread_workspace_files).to be(true)
+    end
+
+    it "builds warmup defaults when section is missing from TOML" do
+      raw = TomlRB.load_file("config/default.toml")
+      raw["agent"].delete("warmup")
+      config = described_class.new(raw)
+      warmup = config.agent.warmup
+      expect(warmup.enabled).to be(true)
+      expect(warmup.preload_chat_model).to be(true)
     end
 
     it "loads tools configuration with sandbox" do

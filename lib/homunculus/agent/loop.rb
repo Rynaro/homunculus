@@ -488,8 +488,6 @@ module Homunculus
 
         duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000).round
 
-        @status_callback&.call(:tool_end, tool_call.name)
-
         @audit.log(
           action: "tool_exec_end",
           tool: tool_call.name,
@@ -515,6 +513,8 @@ module Homunculus
                      error: e.message,
                      session_id: session.id)
         Tools::Result.fail("Tool error: #{e.message}")
+      ensure
+        @status_callback&.call(:tool_end, tool_call.name)
       end
     end
 

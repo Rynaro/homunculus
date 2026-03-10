@@ -3,6 +3,8 @@
 require "httpx"
 require "nokogiri"
 require "semantic_logger"
+require_relative "../tools/base"
+require_relative "../tools/web"
 require_relative "snippet"
 
 module Homunculus
@@ -48,7 +50,7 @@ module Homunculus
         response = HTTPX
                    .with(timeout: { operation_timeout: DEEP_FETCH_TIMEOUT })
                    .plugin(:follow_redirects, max_redirects: 3)
-                   .with(headers: { "User-Agent" => "Homunculus/1.0 (bot)" })
+                   .with(headers: { "User-Agent" => Tools::WebFetch::DEFAULT_USER_AGENT })
                    .get(snippet.url)
 
         return nil unless response.respond_to?(:status) && response.status == 200

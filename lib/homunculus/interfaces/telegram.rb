@@ -4,6 +4,7 @@ require "sequel"
 require "fileutils"
 require "telegram/bot"
 require_relative "telegram/memory_curation"
+require_relative "telegram/warmup_integration"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
 require_relative "sag_reachability"
@@ -14,6 +15,7 @@ module Homunculus
       include SemanticLogger::Loggable
       include MemoryCuration
       include SAGReachability
+      include WarmupIntegration
 
       # Per-chat session entry
       SessionEntry = Struct.new(:session, :last_activity, keyword_init: true)
@@ -46,6 +48,7 @@ module Homunculus
                     escalation: @config.escalation_enabled? ? "enabled" : "disabled (local-only)")
 
         @scheduler_manager&.start
+        run_warmup!
 
         @bot.listen do |update|
           handle_update(update)

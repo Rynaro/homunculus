@@ -52,6 +52,15 @@ module Homunculus
     attribute :compaction_preserved_turns, Types::Strict::Integer.default(3)
   end
 
+  class WarmupConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :enabled, Types::Strict::Bool.default(true)
+    attribute :preload_chat_model, Types::Strict::Bool.default(true)
+    attribute :preload_embedding_model, Types::Strict::Bool.default(true)
+    attribute :preread_workspace_files, Types::Strict::Bool.default(true)
+  end
+
   class AgentConfig < Dry::Struct
     transform_keys(&:to_sym)
 
@@ -59,6 +68,17 @@ module Homunculus
     attribute :max_execution_time_seconds, Types::Strict::Integer.default(300)
     attribute :workspace_path, Types::Strict::String.default("./workspace")
     attribute :context, ContextConfig
+    attribute :warmup, WarmupConfig
+  end
+
+  class WebConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :user_agent_override, Types::Strict::String.optional.default(nil)
+    attribute :max_post_body_size, Types::Coercible::Integer.optional.default(102_400)
+    attribute :max_web_sessions, Types::Coercible::Integer.optional.default(10)
+    attribute :web_session_ttl, Types::Coercible::Integer.optional.default(3600)
+    attribute :allowed_methods, Types::Strict::Array.of(Types::Strict::String).optional.default(%w[GET POST PUT].freeze)
   end
 
   class SandboxConfig < Dry::Struct
@@ -81,6 +101,7 @@ module Homunculus
     attribute :safe_commands, Types::Strict::Array.of(Types::Strict::String).default([].freeze)
     attribute :blocked_patterns, Types::Strict::Array.of(Types::Strict::String).default([].freeze)
     attribute :sandbox, SandboxConfig
+    attribute :web, WebConfig
   end
 
   class MemoryConfig < Dry::Struct
@@ -221,8 +242,10 @@ module Homunculus
 
     def build_agent(raw)
       context_raw = raw.delete("context") || {}
+      warmup_raw = raw.delete("warmup") || {}
       agent_hash = raw.transform_keys(&:to_sym)
       agent_hash[:context] = ContextConfig.new(context_raw)
+      agent_hash[:warmup] = WarmupConfig.new(warmup_raw)
       AgentConfig.new(agent_hash)
     end
 
@@ -237,10 +260,11 @@ module Homunculus
 
     def build_tools(raw)
       sandbox_raw = raw.delete("sandbox") || {}
+      web_raw = raw.delete("web") || {}
       raw.delete("mqtt") # MQTT is handled separately
-      raw.delete("web") # Web config is accessed via tools.web but not part of ToolsConfig struct
       tools_hash = raw.transform_keys(&:to_sym)
       tools_hash[:sandbox] = SandboxConfig.new(sandbox_raw)
+      tools_hash[:web] = WebConfig.new(web_raw)
       ToolsConfig.new(tools_hash)
     end
 

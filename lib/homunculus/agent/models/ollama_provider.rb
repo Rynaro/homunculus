@@ -118,6 +118,38 @@ module Homunculus
           )
         end
 
+        # Force-load a model into Ollama's GPU memory by issuing a minimal chat request.
+        # Returns a hash with timing metrics from the response.
+        def preload_model(model)
+          payload = {
+            model: model,
+            messages: [{ role: "user", content: "hi" }],
+            stream: false,
+            options: { num_predict: 1, temperature: 0 },
+            keep_alive: @keep_alive
+          }
+
+          @logger.info("Preloading model", model: model)
+          start_time = monotonic_ms
+
+          response = http_client.post("#{@base_url}/api/chat", json: payload)
+          raise_if_error!(response)
+
+          elapsed = monotonic_ms - start_time
+          raise ProviderError, "Ollama preload returned #{response.status}" unless response.status == 200
+
+          parsed = JSON.parse(response.body.to_s)
+          @logger.info("Model preloaded", model: model, elapsed_ms: elapsed.round,
+                                          load_duration_ns: parsed["load_duration"])
+
+          {
+            loaded: true,
+            elapsed_ms: elapsed.round,
+            load_duration_ns: parsed["load_duration"],
+            total_duration_ns: parsed["total_duration"]
+          }
+        end
+
         # Health check: GET /api/tags returns 200 if Ollama is running.
         def available?
           response = http_client.get("#{@base_url}/api/tags")
