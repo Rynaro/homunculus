@@ -3,6 +3,7 @@
 require "open3"
 require "json"
 require "shellwords"
+require "timeout"
 
 module Homunculus
   module Security
@@ -45,7 +46,7 @@ module Homunculus
       def docker_execute(command, timeout:)
         docker_cmd = build_docker_command(command)
 
-        stdout, stderr, status = Open3.capture3(*docker_cmd, timeout:)
+        stdout, stderr, status = Timeout.timeout(timeout) { Open3.capture3(*docker_cmd) }
 
         {
           stdout: stdout.strip,
@@ -58,7 +59,7 @@ module Homunculus
       end
 
       def local_execute(command, timeout:)
-        stdout, stderr, status = Open3.capture3(command, timeout:)
+        stdout, stderr, status = Timeout.timeout(timeout) { Open3.capture3(command) }
 
         {
           stdout: stdout.strip,

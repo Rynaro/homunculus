@@ -75,7 +75,7 @@ Commands matching these patterns are rejected with a `SecurityError` before exec
 The `safe_commands` list in config defines commands that skip the confirmation prompt (but still run in the sandbox):
 
 ```
-ls, cat, grep, find, wc, head, tail, date, echo, pwd
+ls, cat, grep, find, wc, head, tail, date, echo, pwd, file, which, awk, sed
 ```
 
 All other commands require user confirmation when `approval_mode` is set to `elevated`.

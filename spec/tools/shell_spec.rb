@@ -187,7 +187,7 @@ RSpec.describe Homunculus::Tools::ShellExec do
 
   describe "timeout handling" do
     it "kills container after timeout" do
-      allow(Open3).to receive(:capture3).and_raise(Timeout::Error)
+      allow(Timeout).to receive(:timeout).and_raise(Timeout::Error)
 
       result = tool.execute(arguments: { command: "sleep 999", timeout: 5 }, session:)
 
@@ -198,10 +198,13 @@ RSpec.describe Homunculus::Tools::ShellExec do
 
     it "caps timeout at 120 seconds" do
       timeout_used = nil
-      allow(Open3).to receive(:capture3) do |*_args, **kwargs|
-        timeout_used = kwargs[:timeout]
-        ["", "", instance_double(Process::Status, exitstatus: 0)]
+      allow(Timeout).to receive(:timeout) do |sec, &block|
+        timeout_used = sec
+        block.call
       end
+      allow(Open3).to receive(:capture3).and_return(
+        ["", "", instance_double(Process::Status, exitstatus: 0)]
+      )
 
       tool.execute(arguments: { command: "ls", timeout: 9999 }, session:)
 
@@ -210,10 +213,13 @@ RSpec.describe Homunculus::Tools::ShellExec do
 
     it "defaults timeout to 30 seconds" do
       timeout_used = nil
-      allow(Open3).to receive(:capture3) do |*_args, **kwargs|
-        timeout_used = kwargs[:timeout]
-        ["", "", instance_double(Process::Status, exitstatus: 0)]
+      allow(Timeout).to receive(:timeout) do |sec, &block|
+        timeout_used = sec
+        block.call
       end
+      allow(Open3).to receive(:capture3).and_return(
+        ["", "", instance_double(Process::Status, exitstatus: 0)]
+      )
 
       tool.execute(arguments: { command: "ls" }, session:)
 
@@ -261,7 +267,8 @@ RSpec.describe Homunculus::Tools::ShellExec do
     end
 
     it "executes directly without Docker" do
-      allow(Open3).to receive(:capture3).with("/bin/sh", "-c", "echo test", timeout: 30).and_return(
+      allow(Timeout).to receive(:timeout).and_yield
+      allow(Open3).to receive(:capture3).with("/bin/sh", "-c", "echo test").and_return(
         ["test\n", "", instance_double(Process::Status, exitstatus: 0)]
       )
 
