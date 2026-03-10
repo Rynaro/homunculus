@@ -21,7 +21,7 @@ gem 'httpx', '~> 1.4'
 
 # Database
 gem 'sequel', '~> 5.86'
-gem 'sqlite3', '~> 2.5'
+gem 'sqlite3', '~> 2.9'
 
 # Logging
 gem 'semantic_logger', '~> 4.16'
