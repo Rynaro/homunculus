@@ -52,6 +52,15 @@ module Homunculus
     attribute :compaction_preserved_turns, Types::Strict::Integer.default(3)
   end
 
+  class WarmupConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :enabled, Types::Strict::Bool.default(true)
+    attribute :preload_chat_model, Types::Strict::Bool.default(true)
+    attribute :preload_embedding_model, Types::Strict::Bool.default(true)
+    attribute :preread_workspace_files, Types::Strict::Bool.default(true)
+  end
+
   class AgentConfig < Dry::Struct
     transform_keys(&:to_sym)
 
@@ -59,6 +68,7 @@ module Homunculus
     attribute :max_execution_time_seconds, Types::Strict::Integer.default(300)
     attribute :workspace_path, Types::Strict::String.default("./workspace")
     attribute :context, ContextConfig
+    attribute :warmup, WarmupConfig
   end
 
   class SandboxConfig < Dry::Struct
@@ -221,8 +231,10 @@ module Homunculus
 
     def build_agent(raw)
       context_raw = raw.delete("context") || {}
+      warmup_raw = raw.delete("warmup") || {}
       agent_hash = raw.transform_keys(&:to_sym)
       agent_hash[:context] = ContextConfig.new(context_raw)
+      agent_hash[:warmup] = WarmupConfig.new(warmup_raw)
       AgentConfig.new(agent_hash)
     end
 

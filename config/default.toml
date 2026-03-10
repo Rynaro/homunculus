@@ -41,6 +41,12 @@ compaction_soft_threshold = 0.75
 compaction_reserve_floor = 500
 compaction_preserved_turns = 3
 
+[agent.warmup]
+enabled = true
+preload_chat_model = true
+preload_embedding_model = true
+preread_workspace_files = true
+
 [tools]
 approval_mode = "elevated"  # off | elevated | always
 safe_commands = ["ls", "cat", "grep", "find", "wc", "head", "tail", "date", "echo", "pwd"]

@@ -8,6 +8,7 @@ require_relative "tui/input_buffer"
 require_relative "tui/activity_indicator"
 require_relative "tui/command_registry"
 require_relative "tui/message_renderer"
+require_relative "../agent/warmup"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
 
@@ -74,6 +75,7 @@ module Homunculus
 
         with_raw_terminal do
           initial_render
+          start_warmup!
           input_loop
         end
       ensure
@@ -121,6 +123,13 @@ module Homunculus
                       end
 
         setup_scheduler! if @config.scheduler.enabled
+
+        @warmup = Agent::Warmup.new(
+          ollama_provider: @ollama_provider,
+          embedder: @memory_store.respond_to?(:embedder) ? @memory_store.embedder : nil,
+          config: @config,
+          workspace_path: @config.agent.workspace_path
+        )
       end
 
       def use_models_router?
@@ -1127,6 +1136,39 @@ module Homunculus
       def push_error_message(text)
         friendly = text.to_s.start_with?("Error:") ? "Hmm, something went wrong: #{text.to_s.sub(/\AError:\s*/, "")}" : text.to_s
         @messages_mutex.synchronize { @messages << { role: :error, text: friendly, timestamp: Time.now } }
+      end
+
+      # ── Warmup ─────────────────────────────────────────────────────
+
+      def start_warmup!
+        return if @warmup.nil? || !@config.agent.warmup.enabled
+
+        @warmup.start!(callback: method(:warmup_display))
+      end
+
+      def warmup_display(event, step, detail)
+        case event
+        when :start
+          push_info_message("⏳ #{warmup_step_label(step)}...")
+        when :complete
+          push_info_message("✓ #{warmup_step_label(step)} (#{detail[:elapsed_ms]}ms)")
+        when :fail
+          push_info_message("⚠ #{warmup_step_label(step)} unavailable")
+        when :done
+          push_info_message("✓ Ready in #{detail[:elapsed_ms]}ms")
+        end
+        refresh_all
+      rescue StandardError => e
+        logger.debug("Warmup display callback error", error: e.message)
+      end
+
+      def warmup_step_label(step)
+        case step
+        when :preload_chat_model then "Loading chat model"
+        when :preload_embedding_model then "Loading embedding model"
+        when :preread_workspace_files then "Pre-reading workspace"
+        else step.to_s.tr("_", " ").capitalize
+        end
       end
 
       def warm_greeting_text
