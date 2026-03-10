@@ -71,6 +71,16 @@ module Homunculus
     attribute :warmup, WarmupConfig
   end
 
+  class WebConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :user_agent_override, Types::Strict::String.optional.default(nil)
+    attribute :max_post_body_size, Types::Coercible::Integer.optional.default(102_400)
+    attribute :max_web_sessions, Types::Coercible::Integer.optional.default(10)
+    attribute :web_session_ttl, Types::Coercible::Integer.optional.default(3600)
+    attribute :allowed_methods, Types::Strict::Array.of(Types::Strict::String).optional.default(%w[GET POST PUT].freeze)
+  end
+
   class SandboxConfig < Dry::Struct
     transform_keys(&:to_sym)
 
@@ -91,6 +101,7 @@ module Homunculus
     attribute :safe_commands, Types::Strict::Array.of(Types::Strict::String).default([].freeze)
     attribute :blocked_patterns, Types::Strict::Array.of(Types::Strict::String).default([].freeze)
     attribute :sandbox, SandboxConfig
+    attribute :web, WebConfig
   end
 
   class MemoryConfig < Dry::Struct
@@ -249,10 +260,11 @@ module Homunculus
 
     def build_tools(raw)
       sandbox_raw = raw.delete("sandbox") || {}
+      web_raw = raw.delete("web") || {}
       raw.delete("mqtt") # MQTT is handled separately
-      raw.delete("web") # Web config is accessed via tools.web but not part of ToolsConfig struct
       tools_hash = raw.transform_keys(&:to_sym)
       tools_hash[:sandbox] = SandboxConfig.new(sandbox_raw)
+      tools_hash[:web] = WebConfig.new(web_raw)
       ToolsConfig.new(tools_hash)
     end
 

@@ -75,6 +75,37 @@ RSpec.describe Homunculus::Agent::PromptBuilder do
       expect(prompt).to include("datetime_now")
     end
 
+    it "includes web strategy guidance after available tools" do
+      prompt = builder.build
+
+      expect(prompt).to include("<web_strategy>")
+      expect(prompt).to include("There is no `web_research` tool in this session.")
+      expect(prompt).to include("If you have a specific known-working URL, use `web_fetch`")
+      expect(prompt).to include("Only call API endpoints when the required credentials are already configured")
+      expect(prompt).to include("search fallback is unavailable in this session")
+      expect(prompt).to include("If a page is `auth_required`, stop retrying and ask the user")
+      expect(prompt).to include("Never guess API endpoints, and do not keep retrying a blocked URL repeatedly.")
+
+      expect(prompt.index("<available_tools>")).to be < prompt.index("<web_strategy>")
+      expect(prompt.index("<web_strategy>")).to be < prompt.index("<system_info>")
+    end
+
+    it "prefers web_research when that tool is registered" do
+      research_tool_class = Class.new(Homunculus::Tools::Base) do
+        tool_name "web_research"
+        description "Research facts on the web."
+
+        def execute(arguments:, session:); end
+      end
+      tool_registry.register(research_tool_class.new)
+
+      prompt = builder.build
+
+      expect(prompt).to include("For factual lookups without a known URL, prefer `web_research`.")
+      expect(prompt).to include("prefer `web_research`.")
+      expect(prompt).not_to include("There is no `web_research` tool in this session.")
+    end
+
     it "includes system info section" do
       prompt = builder.build
 
@@ -109,7 +140,7 @@ RSpec.describe Homunculus::Agent::PromptBuilder do
     it "uses XML-style delimiters" do
       prompt = builder.build
 
-      %w[soul operating_instructions user_context available_tools system_info].each do |section|
+      %w[soul operating_instructions user_context available_tools web_strategy system_info].each do |section|
         expect(prompt).to include("<#{section}>")
         expect(prompt).to include("</#{section}>")
       end

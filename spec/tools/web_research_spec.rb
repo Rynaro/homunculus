@@ -23,6 +23,11 @@ RSpec.describe Homunculus::Tools::WebResearch do
       expect(tool.trust_level).to eq(:untrusted)
     end
 
+    it "positions itself as the preferred factual lookup tool" do
+      expect(tool.description).to include("PREFERRED tool for factual questions")
+      expect(tool.description).to include("Use BEFORE web_fetch")
+    end
+
     it "requires query parameter" do
       expect(tool.parameters[:query][:required]).to be true
     end

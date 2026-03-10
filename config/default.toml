@@ -53,6 +53,9 @@ safe_commands = ["ls", "cat", "grep", "find", "wc", "head", "tail", "date", "ech
 blocked_patterns = ["rm -rf /", "mkfs", "dd if=", "> /dev/"]
 
 [tools.web]
+# Optional: override the transparent browser-compatible default User-Agent used by web tools
+# Example: user_agent_override = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36"
+user_agent_override = ""
 max_post_body_size = 102400
 max_web_sessions = 10
 web_session_ttl = 3600
