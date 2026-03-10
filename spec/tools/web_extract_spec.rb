@@ -32,6 +32,8 @@ RSpec.describe Homunculus::Tools::WebExtract do
     expect(tool.name).to eq("web_extract")
     expect(tool.requires_confirmation).to be true
     expect(tool.trust_level).to eq(:mixed)
+    expect(tool.description).to include("specific URL that you already know works")
+    expect(tool.description).to include("NOT for discovering information")
   end
 
   it "fails when url is missing" do
@@ -154,6 +156,25 @@ RSpec.describe Homunculus::Tools::WebExtract do
 
     expect(result.success).to be false
     expect(result.error).to include("Fetch failed")
+  end
+
+  it "propagates failure_reason and response_classification from fetch" do
+    allow(mock_web_fetch).to receive(:execute).and_return(
+      Homunculus::Tools::Result.fail(
+        "HTTP 403: Forbidden",
+        failure_reason: Homunculus::Tools::WebClassification::BLOCKED_BOT,
+        response_classification: Homunculus::Tools::WebClassification::BLOCKED_BOT
+      )
+    )
+
+    result = tool.execute(
+      arguments: { url: "http://example.com/blocked", selectors: '{"title": "h1"}' },
+      session:
+    )
+
+    expect(result.success).to be false
+    expect(result.metadata[:failure_reason]).to eq(Homunculus::Tools::WebClassification::BLOCKED_BOT)
+    expect(result.metadata[:response_classification]).to eq(Homunculus::Tools::WebClassification::BLOCKED_BOT)
   end
 
   it "rejects too many selectors" do

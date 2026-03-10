@@ -68,5 +68,53 @@ RSpec.describe Homunculus::Interfaces::TUI::MessageRenderer do
       expect(lines.size).to eq(1)
       expect(lines.first).to include(agent_name)
     end
+
+    it "wraps long unbroken tokens instead of overflowing" do
+      token = "x" * 120
+      msg = { role: :assistant, text: token, timestamp: nil }
+      lines = renderer.render(msg)
+
+      expect(lines.length).to be > 1
+      lines.each do |line|
+        expect(Homunculus::Interfaces::TUI::Theme.visible_len(line)).to be <= width
+      end
+    end
+
+    it "preserves repeated spaces and explicit blank lines in plain text" do
+      msg = { role: :user, text: "alpha  beta\n\ngamma", timestamp: nil }
+      lines = renderer.render(msg)
+      raw = lines.map { |line| line.gsub(/\e\[[0-9;]*[mGKHF]/, "") }
+
+      expect(raw.join("\n")).to include("alpha  beta")
+      expect(raw.count { |line| line.strip.empty? }).to be >= 1
+      raw.each { |line| expect(line.length).to be <= width }
+    end
+
+    it "wraps code block lines to the available width" do
+      code = "```ruby\n#{"x" * 120}\n```"
+      msg = { role: :assistant, text: code, timestamp: nil }
+      lines = renderer.render(msg)
+
+      expect(lines.length).to be > 1
+      lines.each do |line|
+        expect(Homunculus::Interfaces::TUI::Theme.visible_len(line)).to be <= width
+      end
+    end
+
+    it "wraps tool request cards instead of truncating long arguments" do
+      msg = {
+        role: :tool_request,
+        tool_name: "workspace_write",
+        arguments: { path: "/tmp/#{"segment" * 20}.txt" },
+        timestamp: nil
+      }
+      lines = renderer.render(msg)
+      raw = lines.map { |line| line.gsub(/\e\[[0-9;]*[mGKHF]/, "") }
+
+      expect(raw.join("\n")).to include("workspace_write")
+      lines.each do |line|
+        expect(Homunculus::Interfaces::TUI::Theme.visible_len(line)).to be <= width
+      end
+    end
   end
 end

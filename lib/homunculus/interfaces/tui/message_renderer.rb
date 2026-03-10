@@ -10,6 +10,8 @@ module Homunculus
       class MessageRenderer
         include TUI::Theme
 
+        ANSI_WRAPPED_TOKEN = /\A((?:\e\[[0-9;]*m)+)(.*?)(\e\[0m)\z/m
+
         def initialize(width:, agent_name: TUI::AGENT_NAME)
           @width = width
           @agent_name = agent_name
@@ -74,67 +76,85 @@ module Homunculus
           w = @width
           border_char = "─"
           inner_w = [w - 4, 10].max
-          top = "┌─ Tool Request #{border_char * [w - 18, 1].max}┐"[0, w]
+          title = " Tool Request "
+          top_inner = "#{title}#{border_char * [w - title.length - 2, 0].max}"
+          top = "┌#{top_inner[0, w - 2].ljust(w - 2, border_char)}┐"
           bottom = "└#{border_char * (w - 2)}┘"
-          lines = [
-            Theme.paint(top, :accent),
-            Theme.paint("│  #{name.to_s[0, inner_w].ljust(inner_w)}│", :accent)
-          ]
+          body = wrap_card_text(name, inner_w)
           args.each do |k, v|
-            arg_line = "#{k}: #{v.inspect}"
-            arg_line = arg_line[0, inner_w] if arg_line.length > inner_w
-            lines << Theme.paint("│  #{arg_line.ljust(inner_w)}│", :accent)
+            body.concat(wrap_card_text("#{k}: #{v.inspect}", inner_w))
           end
-          lines << Theme.paint("│#{" " * (w - 2)}│", :accent)
-          hint1 = "  ◈ Requires confirmation"
-          hint2 = "  Type /confirm or /deny"
-          lines << Theme.paint("│#{hint1.to_s[0, w - 2].ljust(w - 2)}│", :accent)
-          lines << Theme.paint("│#{hint2.to_s[0, w - 2].ljust(w - 2)}│", :accent)
+          body << ""
+          body.concat(wrap_card_text("◈ Requires confirmation", inner_w))
+          body.concat(wrap_card_text("Type /confirm or /deny", inner_w))
+
+          lines = [Theme.paint(top, :accent)]
+          body.each do |line|
+            lines << Theme.paint("│ #{line.ljust(inner_w)} │", :accent)
+          end
           lines << Theme.paint(bottom, :accent)
           lines
         end
 
         def render_plain(text, prefix_plain, indent, color)
-          lines = []
-          text.split("\n").each_with_index do |para, para_idx|
-            words = para.split
-            current_line = para_idx.zero? ? prefix_plain : indent
-            words.each do |word|
-              if Theme.visible_len(current_line) + word.length + 1 > @width
-                lines << paint_role_line(current_line, color, para_idx.zero? && lines.empty?)
-                current_line = indent + word
-              else
-                current_line += (current_line == indent || current_line == prefix_plain ? "" : " ") + word
-              end
+          out = []
+
+          text.to_s.split("\n", -1).each do |line|
+            prefix = out.empty? ? prefix_plain : indent
+            wrapped = wrap_prefixed_text(
+              line,
+              prefix:,
+              continuation: indent,
+              preserve_leading_space: false,
+              strip_trailing: true
+            )
+            wrapped.each do |wrapped_line|
+              out << paint_role_line(wrapped_line, color, out.empty?)
             end
-            lines << paint_role_line(current_line, color, para_idx.zero? && lines.empty?) unless current_line.strip.empty?
           end
-          lines.empty? ? [paint_role_line(prefix_plain, color, true)] : lines
+
+          out.empty? ? [paint_role_line(prefix_plain, color, true)] : out
         end
 
         def render_with_markdown(text, prefix_plain, indent, color)
           segments = split_code_blocks(text)
           out = []
-          first_line = true
-          prefix_len = Theme.visible_len(prefix_plain)
-          indent_len = Theme.visible_len(indent)
 
           segments.each do |seg|
             if seg[:type] == :code
-              block_lines = seg[:content].strip.split("\n")
-              block_lines.shift if block_lines.first.to_s.match(/\A\w+\s*\z/)
+              block = seg[:content].sub(/\A\r?\n/, "")
+              block_lines = block.split("\n", -1)
+              block_lines.shift if block_lines.length > 1 && block_lines.first.to_s.match?(/\A\w+\s*\z/)
               block_lines.each do |line|
-                styled = Theme.paint("  #{line}", :warm_highlight)
-                out << (first_line ? paint_role_line(prefix_plain, color, true).sub(/: \z/, ": ") + styled : indent + styled)
-                first_line = false
+                prefix = out.empty? ? prefix_plain : indent
+                wrapped = wrap_prefixed_text(
+                  "  #{line}",
+                  prefix:,
+                  continuation: indent,
+                  preserve_leading_space: true,
+                  strip_trailing: false
+                )
+                wrapped.each_with_index do |wrapped_line, index|
+                  current_prefix = index.zero? ? prefix : indent
+                  code_content = wrapped_line[current_prefix.length..] || ""
+                  prefix_text = out.empty? && index.zero? ? paint_role_line(current_prefix, color, true) : current_prefix
+                  out << "#{prefix_text}#{Theme.paint(code_content, :warm_highlight)}"
+                end
               end
             else
               expanded = apply_inline_markdown(seg[:content])
-              wrapped = wrap_styled_text(expanded, first_line ? prefix_len : indent_len)
-              wrapped.each_with_index do |line_plain, i|
-                line_with_prefix = first_line && i.zero? ? prefix_plain + line_plain : indent + line_plain
-                out << paint_role_line(line_with_prefix, color, first_line && i.zero?)
-                first_line = false
+              expanded.split("\n", -1).each do |line|
+                prefix = out.empty? ? prefix_plain : indent
+                wrapped = wrap_prefixed_text(
+                  line,
+                  prefix:,
+                  continuation: indent,
+                  preserve_leading_space: false,
+                  strip_trailing: true
+                )
+                wrapped.each do |wrapped_line|
+                  out << paint_role_line(wrapped_line, color, out.empty?)
+                end
               end
             end
           end
@@ -201,25 +221,106 @@ module Homunculus
         end
 
         def wrap_styled_text(styled_str, indent_len)
-          words = styled_str.split(/(\s+)/)
-          lines = []
-          current = +""
-          current_len = 0
-          max_len = @width - indent_len
+          wrap_prefixed_text(
+            styled_str,
+            prefix: "",
+            continuation: "",
+            preserve_leading_space: false,
+            strip_trailing: true
+          ).map { |line| line[indent_len..] || "" }
+        end
 
-          words.each do |w|
-            wlen = Theme.visible_len(w)
-            if current_len + wlen > max_len && !current.empty?
-              lines << current
-              current = w
-              current_len = wlen
-            else
-              current << w
-              current_len += wlen
+        def wrap_card_text(text, width)
+          prev_width = @width
+          @width = width
+          wrap_prefixed_text(
+            text.to_s,
+            prefix: "",
+            continuation: "",
+            preserve_leading_space: true,
+            strip_trailing: false
+          )
+        ensure
+          @width = prev_width
+        end
+
+        def wrap_prefixed_text(text, prefix:, continuation:, preserve_leading_space:, strip_trailing:)
+          tokens = text.to_s.gsub("\t", "  ").scan(/\s+|\S+/)
+          return [prefix.dup] if tokens.empty?
+
+          lines = []
+          current = prefix.dup
+
+          tokens.each do |token|
+            pending = token.dup
+            while pending && !pending.empty?
+              break if whitespace_token?(pending) && !preserve_leading_space &&
+                       empty_content_line?(current, prefix, continuation)
+
+              remaining = [@width - Theme.visible_len(current), 1].max
+              piece, pending = take_visible_prefix(pending, remaining)
+              next if piece.empty?
+
+              next if whitespace_token?(piece) && !preserve_leading_space &&
+                      empty_content_line?(current, prefix, continuation)
+
+              current << piece
+
+              next unless !pending.empty? || Theme.visible_len(current) >= @width
+
+              lines << finalize_wrapped_line(current, prefix:, continuation:, strip_trailing:)
+              current = continuation.dup
             end
           end
-          lines << current unless current.empty?
+
+          unless current == continuation && lines.any?
+            lines << finalize_wrapped_line(current, prefix:, continuation:, strip_trailing:)
+          end
           lines
+        end
+
+        def take_visible_prefix(token, max_visible)
+          return [token, ""] if Theme.visible_len(token) <= max_visible
+
+          if (match = token.match(ANSI_WRAPPED_TOKEN))
+            prefix, content, suffix = match.captures
+            left, right = split_plain_text(content, max_visible)
+            return ["#{prefix}#{left}#{suffix}", right.empty? ? "" : "#{prefix}#{right}#{suffix}"]
+          end
+
+          split_plain_text(token, max_visible)
+        end
+
+        def split_plain_text(text, max_visible)
+          visible = 0
+          left = +""
+          right = +""
+          text.each_char do |char|
+            if visible < max_visible
+              left << char
+              visible += 1
+            else
+              right << char
+            end
+          end
+          [left, right]
+        end
+
+        def finalize_wrapped_line(line, prefix:, continuation:, strip_trailing:)
+          return line unless strip_trailing
+          return prefix.dup if line == prefix
+          return continuation.dup if line == continuation
+
+          trimmed = line.rstrip
+          trimmed.empty? ? continuation.dup : trimmed
+        end
+
+        def whitespace_token?(token)
+          token.match?(/\A\s+\z/)
+        end
+
+        def empty_content_line?(line, prefix, continuation)
+          line == prefix || line == continuation
         end
 
         def paint_role_line(line, color, is_label_line)

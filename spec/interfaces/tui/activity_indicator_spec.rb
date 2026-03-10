@@ -6,11 +6,12 @@ require_relative "../../../lib/homunculus/interfaces/tui"
 RSpec.describe Homunculus::Interfaces::TUI::ActivityIndicator do
   subject(:indicator) { described_class.new(redraw:) }
 
-  # Callable invoked from background thread; plain double avoids lifecycle errors when thread outlives example.
-  let(:redraw) { double("redraw") } # rubocop:disable RSpec/VerifiedDoubles
-
-  before do
-    allow(redraw).to receive(:call)
+  let(:redraw_calls) { [] }
+  let(:redraw_mutex) { Mutex.new }
+  let(:redraw) do
+    lambda do
+      redraw_mutex.synchronize { redraw_calls << Time.now }
+    end
   end
 
   describe "#start" do
@@ -24,8 +25,7 @@ RSpec.describe Homunculus::Interfaces::TUI::ActivityIndicator do
       indicator.start("Working")
       sleep(0.25)
       indicator.stop
-      sleep(0.15) # allow spinner thread to exit before asserting (avoids OutsideOfExampleError)
-      expect(redraw).to have_received(:call).at_least(:twice)
+      expect(redraw_calls.length).to be >= 2
     end
   end
 
@@ -36,6 +36,18 @@ RSpec.describe Homunculus::Interfaces::TUI::ActivityIndicator do
       expect(indicator.message).to eq("Running tool: echo...")
       expect(indicator.running?).to be true
       indicator.stop
+    end
+  end
+
+  describe "#snapshot" do
+    it "returns a consistent running/message/frame view" do
+      indicator.start("Thinking...")
+      snapshot = indicator.snapshot
+      indicator.stop
+
+      expect(snapshot[:running]).to be true
+      expect(snapshot[:message]).to eq("Thinking...")
+      expect(described_class::FRAMES).to include(snapshot[:frame_char])
     end
   end
 
@@ -60,6 +72,18 @@ RSpec.describe Homunculus::Interfaces::TUI::ActivityIndicator do
       sleep(0.1)
       # Spinner thread should be gone; allow for test framework threads
       expect(Thread.list.count).to be <= thread_before + 1
+    end
+
+    it "restarts cleanly without leaving the previous thread running" do
+      indicator.start("first")
+      first_snapshot = indicator.snapshot
+      indicator.start("second")
+      second_snapshot = indicator.snapshot
+      indicator.stop
+
+      expect(first_snapshot[:message]).to eq("first")
+      expect(second_snapshot[:message]).to eq("second")
+      expect(indicator.running?).to be false
     end
   end
 
