@@ -27,6 +27,7 @@ parse_profile_flags() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --with-ollama)   COMPOSE_PROFILES+=(--profile ollama); shift ;;
+      --with-searxng)  COMPOSE_PROFILES+=(--profile searxng); shift ;;
       --with-sandbox)  COMPOSE_PROFILES+=(--profile sandbox); shift ;;
       --build)         REMAINING_ARGS+=(--build); shift ;;
       *)               REMAINING_ARGS+=("$1"); shift ;;
@@ -127,6 +128,11 @@ cmd_restart() {
   cmd_up "$@"
 }
 
+cmd_regenerate() {
+  cmd_build "$@"
+  cmd_restart "$@"
+}
+
 # ---- Recovery / Failover ----
 
 cmd_doctor() {
@@ -166,6 +172,11 @@ cmd_doctor() {
     else
       echo -e "  ${YELLOW}!${NC} Port 11434 not bound (Ollama not running?)"
     fi
+    if ss -tln 2>/dev/null | grep -q ':8888'; then
+      echo -e "  ${GREEN}✓${NC} Port 8888 in use (SearXNG)"
+    else
+      echo -e "  ${YELLOW}!${NC} Port 8888 not bound (SearXNG not running?)"
+    fi
   fi
   if docker ps --filter "name=homunculus-agent" --filter "status=running" -q 2>/dev/null | grep -q .; then
     echo ""
@@ -174,6 +185,13 @@ cmd_doctor() {
       echo -e "  ${GREEN}✓${NC} Ollama API reachable at 127.0.0.1:11434"
     else
       echo -e "  ${YELLOW}!${NC} Ollama not reachable at 127.0.0.1:11434"
+    fi
+    echo ""
+    echo "SearXNG reachability (from host):"
+    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:8888/healthz 2>/dev/null | grep -q 200; then
+      echo -e "  ${GREEN}✓${NC} SearXNG reachable at 127.0.0.1:8888/healthz"
+    else
+      echo -e "  ${YELLOW}!${NC} SearXNG not reachable at 127.0.0.1:8888/healthz"
     fi
   fi
   echo ""
@@ -192,7 +210,7 @@ cmd_obliterate() {
   done
   [[ -n "$confirmed" ]] || error "Obliterate requires --confirm. Use: bin/assistant obliterate --confirm"
   warn "Stopping all profiles and removing containers/networks..."
-  dc --profile ollama --profile sandbox down --remove-orphans "${do_volumes[@]}"
+  dc --profile ollama --profile searxng --profile sandbox down --remove-orphans "${do_volumes[@]}"
   docker network prune -f
   if [[ ${#do_volumes[@]} -gt 0 ]]; then
     warn "Volumes removed. Data (memory, audit, scheduler) has been deleted."
@@ -207,7 +225,7 @@ cmd_status() {
   echo "============================="
   dc ps -a
   echo ""
-  echo "Profiles: use --with-ollama and/or --with-sandbox with 'up' to start optional services."
+  echo "Profiles: use --with-ollama, --with-searxng, and/or --with-sandbox with 'up' to start optional services."
 }
 
 cmd_logs() {
@@ -254,13 +272,14 @@ Usage: bin/assistant <command> [args]
 
 Lifecycle:
   setup              First-run: create .env, build images, pull Ollama model
-  build [args]       Build production images (pass --with-ollama for ollama profile)
-  up [args]          Pre-flight + start. Use --with-ollama, --with-sandbox, --build
+  build [args]       Build production images (pass --with-ollama/--with-searxng/--with-sandbox for profiles)
+  up [args]          Pre-flight + start. Use --with-ollama, --with-searxng, --with-sandbox, --build
   down [args]        Stop services (preserves volumes)
   restart [args]     Down then up (pass same flags as up)
+  regenerate [args]  Build images then restart (down + up with same flags)
 
 Recovery:
-  doctor             Diagnostic report: Docker, compose, .env, containers, ports, Ollama
+  doctor             Diagnostic report: Docker, compose, .env, containers, ports, Ollama, SearXNG
   obliterate         Nuclear cleanup: stop all, remove containers/networks (requires --confirm)
                      Add --volumes to also remove data volumes (destructive)
 
@@ -279,7 +298,9 @@ Info:
 Examples:
   bin/assistant setup
   bin/assistant up --with-ollama
-  bin/assistant up --with-ollama --with-sandbox --build
+  bin/assistant up --with-searxng
+  bin/assistant up --with-ollama --with-searxng
+  bin/assistant up --with-ollama --with-searxng --with-sandbox --build
   bin/assistant obliterate --confirm
   bin/assistant doctor
   bin/assistant logs homunculus-agent
@@ -299,6 +320,7 @@ case "$COMMAND" in
   up)         cmd_up "$@" ;;
   down)       cmd_down "$@" ;;
   restart)    cmd_restart "$@" ;;
+  regenerate) cmd_regenerate "$@" ;;
   doctor)     cmd_doctor "$@" ;;
   obliterate) cmd_obliterate "$@" ;;
   status)     cmd_status "$@" ;;

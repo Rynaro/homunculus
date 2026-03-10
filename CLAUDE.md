@@ -8,10 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 bin/assistant setup                        # first-run: .env, build, optional Ollama pull
-bin/assistant up [--with-ollama] [--with-sandbox] [--build]  # start (pre-flight runs automatically)
+bin/assistant up [--with-ollama] [--with-searxng] [--with-sandbox] [--build]  # start (pre-flight runs automatically)
 bin/assistant down                         # stop
 bin/assistant restart                      # down then up
-bin/assistant doctor                       # diagnostics: Docker, .env, containers, ports
+bin/assistant regenerate                   # build images then restart (down + up)
+bin/assistant doctor                       # diagnostics: Docker, .env, containers, ports, Ollama, SearXNG
 bin/assistant obliterate --confirm [--volumes]  # nuclear cleanup
 bin/assistant status                       # container states
 bin/assistant logs [service]               # tail logs
@@ -75,9 +76,9 @@ User Input → Interface → Session → Agent Loop → Model Router → LLM Pro
 
 **`lib/homunculus/agent/prompt.rb`** — Builds system context by loading `workspace/AGENTS.md`, `workspace/SOUL.md`, `workspace/USER.md`, and memory entries.
 
-**`lib/homunculus/config.rb`** — Dry::Struct-based configuration. TOML source (`config/default.toml`) with environment variable overrides. Multiple nested domains: Gateway, Models, Agent, Tools, Memory, Security, MQTT, Scheduler.
+**`lib/homunculus/config.rb`** — Dry::Struct-based configuration. TOML source (`config/default.toml`) with environment variable overrides. Multiple nested domains: Gateway, Models, Agent, Tools, Memory, Security, MQTT, Scheduler, SAG (SearXNG-backed web_research).
 
-**`lib/homunculus/tools/`** — 19 pluggable tools (echo, datetime, workspace read/write/delete/list, memory search/save/daily_log/curate, files, shell, web, mqtt, scheduler_manage, web_research). Elevated tools (shell, file_write, web_fetch, mqtt_publish, scheduler_manage, memory_curate, workspace_delete) require user confirmation. Execution is sandboxed in an isolated Docker container.
+**`lib/homunculus/tools/`** — 19 pluggable tools (echo, datetime, workspace read/write/delete/list, memory search/save/daily_log/curate, files, shell, web, mqtt, scheduler_manage, web_research). Elevated tools (shell, file_write, web_fetch, mqtt_publish, scheduler_manage, memory_curate, workspace_delete) require user confirmation. Execution is sandboxed in an isolated Docker container. The `web_research` tool uses a SAG pipeline backed by a SearXNG search engine instance.
 
 **`lib/homunculus/memory/`** — SQLite + FTS5 full-text search. Optional vector embeddings via Ollama (nomic-embed-text). Daily memory logs under `workspace/memory/`.
 

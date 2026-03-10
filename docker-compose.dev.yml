@@ -37,6 +37,23 @@ services:
     ports:
       - "127.0.0.1:11434:11434"
 
+  # Optional: SearXNG running as a Docker service for development.
+  # Start with: docker compose -f docker-compose.dev.yml --profile searxng up -d
+  searxng:
+    image: searxng/searxng:latest
+    container_name: homunculus-dev-searxng
+    profiles:
+      - searxng
+    volumes:
+      - ./config/searxng:/etc/searxng:rw
+    networks:
+      - homunculus-dev-net
+      - searxng-dev-egress
+    ports:
+      - "127.0.0.1:8888:8080"
+    security_opt:
+      - no-new-privileges:true
+
   # Optional: Sandbox service for tool execution testing.
   # Start with: docker compose -f docker-compose.dev.yml --profile sandbox up -d
   sandbox:
@@ -62,6 +79,8 @@ networks:
   homunculus-dev-net:
     driver: bridge
     internal: true
+  searxng-dev-egress:
+    driver: bridge  # Allows SearXNG to reach external search engines
 
 volumes:
   homunculus-dev-gems:

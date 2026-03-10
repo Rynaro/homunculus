@@ -62,7 +62,7 @@ RSpec.describe Homunculus::SAGConfig do
       config = Homunculus::Config.load("config/default.toml")
 
       expect(config.sag).to be_a(described_class)
-      expect(config.sag.enabled).to be false
+      expect(config.sag.enabled).to be true
     end
   end
 end

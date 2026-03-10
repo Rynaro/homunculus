@@ -1,0 +1,15 @@
+use_default_settings: true
+
+general:
+  instance_name: "Homunculus Search"
+
+server:
+  secret_key: "homunculus-internal-only-secret"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
+

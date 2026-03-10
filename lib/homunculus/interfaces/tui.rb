@@ -10,6 +10,7 @@ require_relative "tui/command_registry"
 require_relative "tui/message_renderer"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
+require_relative "sag_reachability"
 
 module Homunculus
   module Interfaces
@@ -32,6 +33,7 @@ module Homunculus
     class TUI
       include SemanticLogger::Loggable
       include TUI::Theme
+      include SAGReachability
 
       HEADER_ROWS  = 3
       STATUS_ROWS  = 1
@@ -49,6 +51,7 @@ module Homunculus
         @agent_loop     = nil
         @messages       = []   # [{role:, text:, lines: []}]
         @messages_mutex = Mutex.new
+        @render_mutex   = Mutex.new
         @overlay_content = nil # nil or array of lines (help/status overlay); cleared on next input
         @suggestion_lines = nil # nil or array of strings (slash command suggestions); transient, not in @messages
         @command_registry = TUI::CommandRegistry.new
@@ -100,6 +103,7 @@ module Homunculus
         end
 
         @tool_registry = build_tool_registry
+        warn_sag_disabled unless @config.sag.enabled
         @prompt_builder = Agent::PromptBuilder.new(
           workspace_path: @config.agent.workspace_path,
           tool_registry: @tool_registry,
@@ -173,19 +177,9 @@ module Homunculus
 
       def build_stream_callback
         lambda do |chunk|
-          first_chunk = false
-          @messages_mutex.synchronize do
-            if @streaming_buf.nil?
-              @streaming_buf = { role: :assistant, text: +"", lines: [], timestamp: Time.now }
-              @messages << @streaming_buf
-              first_chunk = true
-            end
-            @streaming_buf[:text] << chunk
-            @streaming_output_tokens_estimate = estimate_output_tokens(@streaming_buf[:text])
-          end
+          first_chunk = append_stream_chunk(chunk)
           @activity_indicator.stop if first_chunk
-          refresh_chat_panel
-          refresh_status_bar
+          refresh_chat_and_status
         end
       end
 
@@ -238,6 +232,7 @@ module Homunculus
       def register_sag_tool(registry)
         llm_adapter = build_sag_llm_adapter
         return unless llm_adapter
+        return unless sag_backend_available?(logger, @config)
 
         embedder = @memory_store.respond_to?(:embedder) ? @memory_store.embedder : nil
         factory = SAG::PipelineFactory.new(
@@ -249,6 +244,10 @@ module Homunculus
         logger.info("SAG web_research tool registered")
       rescue StandardError => e
         logger.warn("SAG tool registration failed — web_research unavailable", error: e.message)
+      end
+
+      def warn_sag_disabled
+        logger.warn("SAG disabled in config — web_research unavailable until [sag].enabled is true and SearXNG is configured")
       end
 
       def build_sag_llm_adapter
@@ -268,6 +267,7 @@ module Homunculus
           when :tool_end
             @activity_indicator&.update("Processing results...")
           end
+          refresh_status_bar
         end
       end
 
@@ -412,17 +412,28 @@ module Homunculus
       # ── Full Render ────────────────────────────────────────────────
 
       def initial_render
-        clear_screen
-        render_header
-        render_chat_panel
-        render_status_bar
-        render_input_line
+        with_render_lock do
+          clear_screen
+          render_header_frame
+          render_chat_panel_frame
+          render_status_bar_frame
+          render_input_line_frame
+        end
       end
 
       def refresh_all
-        render_chat_panel
-        render_status_bar
-        render_input_line
+        with_render_lock do
+          render_chat_panel_frame
+          render_status_bar_frame
+          render_input_line_frame
+        end
+      end
+
+      def refresh_chat_and_status
+        with_render_lock do
+          render_chat_panel_frame
+          render_status_bar_frame
+        end
       end
 
       def clear_screen
@@ -433,6 +444,10 @@ module Homunculus
       # ── Header ─────────────────────────────────────────────────────
 
       def render_header
+        with_render_lock { render_header_frame }
+      end
+
+      def render_header_frame
         move_to(1, 1)
         $stdout.write(paint(horizontal_rule(Theme::HEADER_TOP_CHAR), :accent))
         move_to(1, 2)
@@ -458,14 +473,20 @@ module Homunculus
       # ── Chat Panel ─────────────────────────────────────────────────
 
       def render_chat_panel
-        lines  = build_chat_lines
+        with_render_lock { render_chat_panel_frame }
+      end
+
+      def render_chat_panel_frame
+        snapshot = chat_panel_snapshot
+        lines = snapshot[:lines]
         total  = lines.length
         window = chat_rows
         max_scroll = [total - window, 0].max
-        show_above = @scroll_offset < max_scroll && max_scroll.positive?
-        show_below = @scroll_offset.positive?
+        scroll_offset = [snapshot[:scroll_offset], max_scroll].min
+        show_above = scroll_offset < max_scroll && max_scroll.positive?
+        show_below = scroll_offset.positive?
         content_rows = window - (show_above ? 1 : 0) - (show_below ? 1 : 0)
-        start = [total - content_rows - @scroll_offset, 0].max
+        start = [total - content_rows - scroll_offset, 0].max
         slice = lines[start, content_rows] || []
 
         (0...window).each do |r|
@@ -486,29 +507,43 @@ module Homunculus
       end
 
       def refresh_chat_panel
-        render_chat_panel
+        with_render_lock { render_chat_panel_frame }
       end
 
       def build_chat_lines
-        w = inner_width
-        return @overlay_content.flat_map { |line| wrap_plain_line(line, w) }.map { |l| paint(l, :muted) } if @overlay_content
+        chat_panel_snapshot[:lines]
+      end
 
-        renderer = TUI::MessageRenderer.new(width: w, agent_name: @agent_name)
+      def chat_panel_snapshot
+        w = inner_width
         @messages_mutex.synchronize do
-          all_lines = []
-          prev_role = nil
-          prev_date = nil
-          @messages.each do |msg|
-            msg_date = msg[:timestamp]&.to_date
-            all_lines << paint(date_separator_line(msg[:timestamp], w), :muted) if prev_date && msg_date && prev_date != msg_date
-            all_lines << paint(turn_separator_line(w), :muted) if prev_role && prev_role != msg[:role]
-            all_lines.concat(renderer.render(msg))
-            all_lines << ""
-            prev_role = msg[:role]
-            prev_date = msg_date
-          end
-          all_lines
+          overlay = @overlay_content&.dup
+          lines = if overlay
+                    overlay.flat_map { |line| wrap_plain_line(line, w) }.map { |line| paint(line, :muted) }
+                  else
+                    rendered_message_lines(@messages.map(&:dup), w)
+                  end
+          { lines:, scroll_offset: @scroll_offset }
         end
+      end
+
+      def rendered_message_lines(messages, width)
+        renderer = TUI::MessageRenderer.new(width:, agent_name: @agent_name)
+        all_lines = []
+        prev_role = nil
+        prev_date = nil
+        messages.each do |msg|
+          msg_date = msg[:timestamp]&.to_date
+          if prev_date && msg_date && prev_date != msg_date
+            all_lines << paint(date_separator_line(msg[:timestamp], width), :muted)
+          end
+          all_lines << paint(turn_separator_line(width), :muted) if prev_role && prev_role != msg[:role]
+          all_lines.concat(renderer.render(msg))
+          all_lines << ""
+          prev_role = msg[:role]
+          prev_date = msg_date
+        end
+        all_lines
       end
 
       def turn_separator_line(width)
@@ -542,6 +577,10 @@ module Homunculus
       # ── Status Bar ─────────────────────────────────────────────────
 
       def render_status_bar
+        with_render_lock { render_status_bar_frame }
+      end
+
+      def render_status_bar_frame
         row = HEADER_ROWS + chat_rows + 1
         move_to(1, row)
         # Overwrite in place (content is padded to term_width). Avoid clear_line to reduce blink.
@@ -550,19 +589,12 @@ module Homunculus
       end
 
       def refresh_status_bar
-        render_status_bar
+        with_render_lock { render_status_bar_frame }
       end
 
       def status_bar_content
-        status_part = if @activity_indicator&.running?
-                        "#{@activity_indicator.frame_char} #{@activity_indicator.message}"
-                      elsif @session&.pending_tool_call
-                        "⚠ awaiting confirm"
-                      elsif @scroll_offset.positive?
-                        "↕ scrolled"
-                      else
-                        session_status_label
-                      end
+        indicator = @activity_indicator&.snapshot
+        scroll_offset = @messages_mutex.synchronize { @scroll_offset }
         sep = Theme::STATUS_SEP
         model_short = status_bar_model_label
         model_style = model_tier_style
@@ -571,7 +603,7 @@ module Homunculus
           token_usage_label ? "#{token_usage_label} tokens" : nil,
           turn_label&.sub(/\Aturns: /, "turn "),
           elapsed_session_time,
-          status_part
+          resolved_status_part(indicator:, scroll_offset:)
         ].compact
         raw = sections.join(sep)
         pad = [term_width - visible_len(" #{raw} "), 0].max
@@ -587,6 +619,14 @@ module Homunculus
                  end
         end
         "#{out}#{" " * pad} "
+      end
+
+      def resolved_status_part(indicator:, scroll_offset:)
+        return "#{indicator[:frame_char]} #{indicator[:message]}" if indicator&.fetch(:running, false)
+        return "⚠ awaiting confirm" if @session&.pending_tool_call
+        return "↕ scrolled" if scroll_offset.positive?
+
+        session_status_label
       end
 
       def elapsed_session_time
@@ -699,6 +739,10 @@ module Homunculus
       # No args: empty line + hide cursor. With input_buffer: draw text + show cursor. Legacy: (text, cursor).
       # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
       def render_input_line(input_buffer_or_text = nil, cursor_pos = nil)
+        with_render_lock { render_input_line_frame(input_buffer_or_text, cursor_pos) }
+      end
+
+      def render_input_line_frame(input_buffer_or_text = nil, cursor_pos = nil)
         status_row = HEADER_ROWS + chat_rows + 1
         input_row  = status_row + 2
         suggestion_entries = @suggestion_lines&.any? ? @suggestion_lines.first(5) : []
@@ -751,6 +795,7 @@ module Homunculus
                            p = cursor_pos.nil? ? t.length : cursor_pos
                            [t, p.clamp(0, t.length)]
                          end
+          text = normalize_terminal_text(text)
           $stdout.write("\e[?25h")
           prompt = paint("#{Theme::PROMPT_CHAR} ", :user, :bold)
           prompt_len = visible_len("#{Theme::PROMPT_CHAR} ")
@@ -794,8 +839,11 @@ module Homunculus
           break if input.nil?
 
           input = input.scrub.strip
-          had_overlay = !@overlay_content.nil?
-          @overlay_content = nil
+          had_overlay = @messages_mutex.synchronize do
+            was_present = !@overlay_content.nil?
+            @overlay_content = nil
+            was_present
+          end
           refresh_all if had_overlay
           process_input(input)
         end
@@ -893,24 +941,23 @@ module Homunculus
         chat_line_count = build_chat_lines.length
         max_scroll = [chat_line_count - chat_rows, 0].max
 
-        case seq
-        when "[A", "[1;2A" # Up / Shift+Up
-          @scroll_offset = [@scroll_offset + 3, max_scroll].min
-          refresh_chat_panel
-        when "[B", "[1;2B" # Down / Shift+Down
-          @scroll_offset = [@scroll_offset - 3, 0].max
-          refresh_chat_panel
-        when "[5~" # Page Up
-          @scroll_offset = [@scroll_offset + chat_rows, max_scroll].min
-          refresh_chat_panel
-        when "[6~" # Page Down
-          @scroll_offset = [@scroll_offset - chat_rows, 0].max
-          refresh_chat_panel
+        @messages_mutex.synchronize do
+          case seq
+          when "[A", "[1;2A" # Up / Shift+Up
+            @scroll_offset = [@scroll_offset + 3, max_scroll].min
+          when "[B", "[1;2B" # Down / Shift+Down
+            @scroll_offset = [@scroll_offset - 3, 0].max
+          when "[5~" # Page Up
+            @scroll_offset = [@scroll_offset + chat_rows, max_scroll].min
+          when "[6~" # Page Down
+            @scroll_offset = [@scroll_offset - chat_rows, 0].max
+          end
         end
+        refresh_chat_and_status
       end
 
       def process_input(input)
-        @overlay_content = nil
+        @messages_mutex.synchronize { @overlay_content = nil }
         stripped = input.to_s.strip
 
         if stripped.start_with?("/")
@@ -918,7 +965,9 @@ module Homunculus
           if cmd_key
             dispatch_slash_command(cmd_key)
           else
-            @overlay_content = ["Unknown command. Type /help for available commands."]
+            @messages_mutex.synchronize do
+              @overlay_content = ["Unknown command. Type /help for available commands."]
+            end
             refresh_all
           end
           return
@@ -941,8 +990,10 @@ module Homunculus
         when "deny"
           handle_deny
         when "clear"
-          @messages_mutex.synchronize { @messages.clear }
-          @scroll_offset = 0
+          @messages_mutex.synchronize do
+            @messages.clear
+            @scroll_offset = 0
+          end
           refresh_all
         else
           handle_message(input)
@@ -955,8 +1006,10 @@ module Homunculus
         when :show_help then show_help
         when :show_status then show_status
         when :clear
-          @messages_mutex.synchronize { @messages.clear }
-          @scroll_offset = 0
+          @messages_mutex.synchronize do
+            @messages.clear
+            @scroll_offset = 0
+          end
           refresh_all
         when :confirm then handle_confirm
         when :deny then handle_deny
@@ -997,7 +1050,6 @@ module Homunculus
           @streaming_buf = nil
           @streaming_output_tokens_estimate = nil
         end
-        @scroll_offset = 0
         display_result(result)
       rescue StandardError => e
         logger.error("Error processing message", error: e.message)
@@ -1058,7 +1110,6 @@ module Homunculus
           @streaming_buf = nil
           @streaming_output_tokens_estimate = nil
         end
-        @scroll_offset = 0
         display_result(result)
       rescue StandardError => e
         push_error_message("Error: #{e.message}")
@@ -1077,7 +1128,6 @@ module Homunculus
           @streaming_buf = nil
           @streaming_output_tokens_estimate = nil
         end
-        @scroll_offset = 0
         display_result(result)
       rescue StandardError => e
         push_error_message("Error: #{e.message}")
@@ -1096,14 +1146,12 @@ module Homunculus
           push_assistant_message(result.response) unless use_models_router?
         when :pending_confirmation
           tc = result.pending_tool_call
-          @messages_mutex.synchronize do
-            @messages << {
-              role: :tool_request,
-              tool_name: tc.name,
-              arguments: tc.arguments,
-              timestamp: Time.now
-            }
-          end
+          append_chat_message(
+            role: :tool_request,
+            tool_name: tc.name,
+            arguments: tc.arguments,
+            timestamp: Time.now
+          )
         when :error
           push_error_message(result.error.to_s)
         end
@@ -1112,21 +1160,59 @@ module Homunculus
 
       # ── Message Queue ──────────────────────────────────────────────
 
+      def append_stream_chunk(chunk)
+        first_chunk = false
+
+        @messages_mutex.synchronize do
+          preserve_scroll_position do
+            if @streaming_buf.nil?
+              @streaming_buf = { role: :assistant, text: +"", lines: [], timestamp: Time.now }
+              @messages << @streaming_buf
+              first_chunk = true
+            end
+
+            @streaming_buf[:text] << chunk
+            @streaming_output_tokens_estimate = estimate_output_tokens(@streaming_buf[:text])
+          end
+        end
+
+        first_chunk
+      end
+
+      def append_chat_message(message)
+        @messages_mutex.synchronize do
+          preserve_scroll_position do
+            @messages << message
+          end
+        end
+      end
+
+      def preserve_scroll_position
+        previous_line_count = rendered_message_lines(@messages, inner_width).length
+        follow_latest_output = @scroll_offset.zero?
+        yield
+        return if follow_latest_output
+
+        current_line_count = rendered_message_lines(@messages, inner_width).length
+        line_delta = current_line_count - previous_line_count
+        @scroll_offset += line_delta if line_delta.positive?
+      end
+
       def push_user_message(text)
-        @messages_mutex.synchronize { @messages << { role: :user, text: text.to_s, timestamp: Time.now } }
+        append_chat_message(role: :user, text: text.to_s, timestamp: Time.now)
       end
 
       def push_assistant_message(text)
-        @messages_mutex.synchronize { @messages << { role: :assistant, text: text.to_s, timestamp: Time.now } }
+        append_chat_message(role: :assistant, text: text.to_s, timestamp: Time.now)
       end
 
       def push_info_message(text)
-        @messages_mutex.synchronize { @messages << { role: :info, text: text.to_s, timestamp: Time.now } }
+        append_chat_message(role: :info, text: text.to_s, timestamp: Time.now)
       end
 
       def push_error_message(text)
         friendly = text.to_s.start_with?("Error:") ? "Hmm, something went wrong: #{text.to_s.sub(/\AError:\s*/, "")}" : text.to_s
-        @messages_mutex.synchronize { @messages << { role: :error, text: friendly, timestamp: Time.now } }
+        append_chat_message(role: :error, text: friendly, timestamp: Time.now)
       end
 
       def warm_greeting_text
@@ -1167,7 +1253,7 @@ module Homunculus
             Arrow Up/Down or Page Up/Down to scroll history
           Just type naturally — I understand plain language too.
         HELP
-        @overlay_content = help_text.split("\n")
+        @messages_mutex.synchronize { @overlay_content = help_text.split("\n") }
         refresh_all
       end
 
@@ -1185,7 +1271,7 @@ module Homunculus
           Provider: #{@provider_name}
           Workspace:#{@config.agent.workspace_path}
         STATUS
-        @overlay_content = status_text.split("\n")
+        @messages_mutex.synchronize { @overlay_content = status_text.split("\n") }
         refresh_all
       end
 
@@ -1207,7 +1293,7 @@ module Homunculus
           lines.concat(tier_descriptions)
         end
 
-        @overlay_content = lines
+        @messages_mutex.synchronize { @overlay_content = lines }
         refresh_all
       end
 
@@ -1270,6 +1356,18 @@ module Homunculus
       end
 
       # ── ANSI / Rendering Helpers ───────────────────────────────────
+
+      def with_render_lock(&)
+        @render_mutex.synchronize(&)
+      end
+
+      def normalize_terminal_text(text)
+        value = text.to_s.dup
+        return value if value.encoding == Encoding::UTF_8 && value.valid_encoding?
+
+        value.force_encoding(Encoding::UTF_8)
+        value.scrub
+      end
 
       def move_to(col, row)
         $stdout.write("\e[#{row};#{col}H")

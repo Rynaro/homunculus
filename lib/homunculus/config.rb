@@ -297,6 +297,12 @@ module Homunculus
           raw["models"]["local"]["base_url"] = ENV.fetch("OLLAMA_BASE_URL")
         end
 
+        # SearXNG URL from env (supports host or dockerized SearXNG)
+        if ENV.key?("SEARXNG_URL")
+          raw["sag"] ||= {}
+          raw["sag"]["searxng_url"] = ENV.fetch("SEARXNG_URL")
+        end
+
         # Ollama request timeout from env (e.g. Docker / slow instances)
         return unless ENV.key?("OLLAMA_TIMEOUT_SECONDS")
 
