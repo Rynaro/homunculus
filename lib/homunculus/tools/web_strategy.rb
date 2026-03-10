@@ -68,6 +68,7 @@ module Homunculus
         def valid_url?(url)
           u = url.to_s.strip
           return false if u.empty?
+
           u.start_with?("http://", "https://")
         end
       end

@@ -139,7 +139,7 @@ RSpec.describe Homunculus::Tools::WebFetch do
       )
 
       # Body must be HTML with sufficient content (>= 100 chars) to pass minimal-body check
-      body = "<html><body><h1>Hello</h1><p>Example.com test page. Content must exceed minimal HTML threshold.</p></body></html>"
+      body = "<html><body><h1>Hello</h1><p>Example.com test page. Content exceeds minimal threshold.</p></body></html>"
       response = instance_double(HTTPX::Response, status: 200, body: double(to_s: body))
       http_client = instance_double(HTTPX::Session)
       allow(http_client).to receive_messages(get: response, with: http_client)
@@ -319,7 +319,8 @@ RSpec.describe Homunculus::Tools::WebFetch do
     end
 
     it "returns fetch_mode and response_classification on success" do
-      html = "<html><head><title>Test</title></head><body><h1>Hello</h1><p>Content here for classification.</p></body></html>"
+      html = "<html><head><title>T</title></head><body><h1>Hi</h1><p>Content for " \
+             "classification test with enough chars to pass.</p></body></html>"
       response = instance_double(HTTPX::Response, status: 200, body: double(to_s: html))
       http_client = instance_double(HTTPX::Session)
       allow(http_client).to receive_messages(get: response, with: http_client)

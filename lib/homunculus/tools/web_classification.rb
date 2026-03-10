@@ -54,9 +54,9 @@ module Homunculus
 
         def classify_200_body(body)
           text = body.to_s.downcase
-          return { failure_reason: INCOMPLETE_HTML, response_classification: INCOMPLETE_HTML } if body.length < MIN_BODY_THRESHOLD
           return { failure_reason: AUTH_REQUIRED, response_classification: AUTH_REQUIRED } if auth_indicators_match?(text)
           return { failure_reason: JS_REQUIRED, response_classification: JS_REQUIRED } if js_required?(body)
+          return { failure_reason: INCOMPLETE_HTML, response_classification: INCOMPLETE_HTML } if body.length < MIN_BODY_THRESHOLD
 
           { failure_reason: SUCCESS, response_classification: SUCCESS }
         end
@@ -66,8 +66,14 @@ module Homunculus
         end
 
         def js_required?(body)
-          # Minimal skeleton or loading placeholder
-          body.to_s.strip =~ /\A\s*<(?:html|!DOCTYPE|script|div)[\s>]/i && body.length < 500
+          # Minimal skeleton or loading placeholder; exclude bodies with substantial text
+          return false unless body.to_s.strip =~ /\A\s*<(?:html|!DOCTYPE|script|div)[\s>]/i
+          return false unless body.length < 500
+
+          text_only = body.to_s.gsub(/<[^>]+>/, " ").gsub(/\s+/, " ").strip
+          return false if text_only.length >= 50
+
+          true
         end
       end
     end
