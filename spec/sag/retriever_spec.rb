@@ -122,5 +122,15 @@ RSpec.describe Homunculus::SAG::Retriever do
       expect(result.first.rank).to eq(1)
       expect(result[1].rank).to eq(2)
     end
+
+    it "uses the shared web-fetch User-Agent for deep fetches" do
+      retriever.retrieve(query: "test")
+
+      expect(
+        a_request(:get, "https://example.com/1").with(
+          headers: { "User-Agent" => Homunculus::Tools::WebFetch::DEFAULT_USER_AGENT }
+        )
+      ).to have_been_made
+    end
   end
 end

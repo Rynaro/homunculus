@@ -14,6 +14,8 @@ module Homunculus
     class WebResearch < Base
       tool_name "web_research"
       description <<~DESC.strip
+        PREFERRED tool for factual questions such as weather, news, prices, scores, and current events.
+        Use BEFORE web_fetch when you need information but do not already have a specific URL.
         Research a topic by searching the web, synthesizing multiple sources, and returning a cited answer.
         Uses SearXNG for search, reranks results, and generates a grounded response with [N] citations.
         Returns the answer text, source URLs, and a confidence score.
