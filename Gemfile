@@ -17,7 +17,7 @@ gem 'dry-struct', '~> 1.6'
 gem 'dry-types', '~> 1.7'
 
 # HTTP client
-gem 'httpx', '~> 1.4'
+gem 'httpx', '~> 1.7'
 
 # Database
 gem 'sequel', '~> 5.86'
