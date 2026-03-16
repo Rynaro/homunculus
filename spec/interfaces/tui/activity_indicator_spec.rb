@@ -4,14 +4,22 @@ require "spec_helper"
 require_relative "../../../lib/homunculus/interfaces/tui"
 
 RSpec.describe Homunculus::Interfaces::TUI::ActivityIndicator do
-  subject(:indicator) { described_class.new(redraw:) }
+  subject(:indicator) { described_class.new(event_queue:) }
 
-  let(:redraw_calls) { [] }
-  let(:redraw_mutex) { Mutex.new }
-  let(:redraw) do
-    lambda do
-      redraw_mutex.synchronize { redraw_calls << Time.now }
+  let(:tick_events) { [] }
+  let(:tick_mutex)  { Mutex.new }
+  let(:event_queue) do
+    q = Thread::Queue.new
+    Thread.new do
+      loop do
+        event = q.pop
+        tick_mutex.synchronize { tick_events << event }
+        break if event[:type] == :shutdown
+      end
+    rescue StandardError
+      nil
     end
+    q
   end
 
   describe "#start" do
@@ -19,13 +27,17 @@ RSpec.describe Homunculus::Interfaces::TUI::ActivityIndicator do
       indicator.start("Thinking...")
       expect(indicator.message).to eq("Thinking...")
       expect(indicator.running?).to be true
+      indicator.stop
     end
 
-    it "starts a thread that invokes redraw periodically" do
+    it "starts a thread that pushes spinner_tick events periodically" do
       indicator.start("Working")
-      sleep(0.25)
+      sleep(0.45)
       indicator.stop
-      expect(redraw_calls.length).to be >= 2
+      tick_mutex.synchronize do
+        spinner_events = tick_events.select { |e| e[:type] == :spinner_tick }
+        expect(spinner_events.length).to be >= 2
+      end
     end
   end
 

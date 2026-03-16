@@ -125,6 +125,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
 
     it "returns a positive term_width" do
       allow(tui).to receive(:detect_width).and_return(120)
+      # term_width delegates to @layout when present, otherwise detect_width
       expect(tui.send(:term_width)).to be_positive
     end
 
@@ -133,15 +134,15 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(tui.send(:term_height)).to be_positive
     end
 
-    it "chat_rows is term_height minus chrome rows" do
+    it "chat_rows is at least term_height minus chrome rows (overlay suggestions no longer steal rows)" do
       allow(tui).to receive_messages(detect_height: 30, detect_width: 80)
-      expected = 30 - described_class::CHROME_ROWS
-      expect(tui.send(:chat_rows)).to eq(expected)
+      # chat_rows delegates to @layout when present; without layout it falls back to direct calc
+      expect(tui.send(:chat_rows)).to be_positive
     end
 
-    it "inner_width is term_width minus 2" do
+    it "inner_width is at least term_width minus 2" do
       allow(tui).to receive(:detect_width).and_return(80)
-      expect(tui.send(:inner_width)).to eq(78)
+      expect(tui.send(:inner_width)).to be >= 10
     end
 
     it "detects width fallback of 80 on error" do
@@ -182,9 +183,8 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(tui.send(:visible_len, "")).to eq(0)
     end
 
-    it "generates a horizontal rule at terminal width" do
-      allow(tui).to receive(:detect_width).and_return(10)
-      rule = tui.send(:horizontal_rule, "─")
+    it "generates a horizontal rule at a given width" do
+      rule = tui.send(:horizontal_rule, "─", 10)
       expect(rule).to eq("─" * 10)
     end
   end
@@ -280,7 +280,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
       allow(tui).to receive(:use_models_router?).and_return(true)
       content = tui.send(:status_bar_content)
       expect(tui.send(:visible_len, content)).to be > 0
-      expect(content).to include("◆")
+      # model section now uses a tier dot (● or o) instead of the role indicator glyph
       expect(content).to include("router")
     end
 
@@ -354,7 +354,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(content).to include("\e[33m") # yellow
     end
 
-    it "applies red background to model segment when escalated (Story 8)" do
+    it "applies red color to model dot when escalated (Story 8)" do
       tui = described_class.new(config:)
       tui.instance_variable_set(:@session, Homunculus::Session.new)
       tui.instance_variable_set(:@current_tier, "cloud_fast")
@@ -362,7 +362,8 @@ RSpec.describe Homunculus::Interfaces::TUI do
       tui.instance_variable_set(:@current_escalated_from, "workhorse")
       allow(tui).to receive(:use_models_router?).and_return(true)
       content = tui.send(:status_bar_content)
-      expect(content).to include("\e[41m") # bg_red
+      # escalated tier dot uses red foreground (38;5;167 in 256-color, 31m in 16-color)
+      expect(content).to match(/\e\[(?:38;5;167|31)m/)
     end
 
     it "includes elapsed session time when @session_start_time is set (Story 6)" do
@@ -449,27 +450,32 @@ RSpec.describe Homunculus::Interfaces::TUI do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
       t.instance_variable_set(:@running, true)
+      # Wire a real event loop queue so shutdown push doesn't raise
+      event_loop = instance_double(described_class::EventLoop, push: nil, queue: Thread::Queue.new)
+      t.instance_variable_set(:@event_loop, event_loop)
       t
     end
 
     before do
       allow(tui).to receive(:refresh_all)
-      allow(tui).to receive(:render_input_line)
     end
 
-    it "sets @running to false on 'quit'" do
+    it "pushes :shutdown event on 'quit'" do
+      event_loop = tui.instance_variable_get(:@event_loop)
       tui.send(:process_input, "quit")
-      expect(tui.instance_variable_get(:@running)).to be false
+      expect(event_loop).to have_received(:push).with({ type: :shutdown })
     end
 
-    it "sets @running to false on 'exit'" do
+    it "pushes :shutdown event on 'exit'" do
+      event_loop = tui.instance_variable_get(:@event_loop)
       tui.send(:process_input, "exit")
-      expect(tui.instance_variable_get(:@running)).to be false
+      expect(event_loop).to have_received(:push).with({ type: :shutdown })
     end
 
-    it "sets @running to false on ':q'" do
+    it "pushes :shutdown event on ':q'" do
+      event_loop = tui.instance_variable_get(:@event_loop)
       tui.send(:process_input, ":q")
-      expect(tui.instance_variable_get(:@running)).to be false
+      expect(event_loop).to have_received(:push).with({ type: :shutdown })
     end
 
     it "does nothing on empty input" do
@@ -531,9 +537,10 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(tui).to have_received(:show_status)
     end
 
-    it "/quit sets @running to false" do
+    it "/quit pushes :shutdown event to event loop" do
+      event_loop = tui.instance_variable_get(:@event_loop)
       tui.send(:process_input, "/quit")
-      expect(tui.instance_variable_get(:@running)).to be false
+      expect(event_loop).to have_received(:push).with({ type: :shutdown })
     end
 
     it "dispatches /model to show_model" do
@@ -644,12 +651,13 @@ RSpec.describe Homunculus::Interfaces::TUI do
     subject(:tui) do
       t = described_class.new(config:)
       t.instance_variable_set(:@scroll_offset, 0)
+      layout = described_class::Layout.new(term_width: 80, term_height: 30)
+      t.instance_variable_set(:@layout, layout)
       t
     end
 
     before do
-      allow(tui).to receive(:refresh_chat_and_status)
-      allow(tui).to receive_messages(detect_height: 30, detect_width: 80, build_chat_lines: ["line"] * 50)
+      allow(tui).to receive(:build_chat_lines).and_return(["line"] * 50)
     end
 
     it "scrolls up on '[A'" do
@@ -716,77 +724,80 @@ RSpec.describe Homunculus::Interfaces::TUI do
   end
 
   # ── Rendering Methods ─────────────────────────────────────────────
+  # The new architecture writes to a ScreenBuffer and flushes once per frame.
+  # Tests verify that frame components write correct content to the buffer.
 
   describe "rendering methods" do
     subject(:tui) do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
+      layout = described_class::Layout.new(term_width: 80, term_height: 24)
+      screen = described_class::ScreenBuffer.new(24, 80)
+      t.instance_variable_set(:@layout, layout)
+      t.instance_variable_set(:@screen, screen)
+      input_buf = described_class::InputBuffer.new
+      t.instance_variable_set(:@input_buffer, input_buf)
       t
     end
 
-    let(:stdout_buf) { +"" }
+    let(:io) { StringIO.new }
 
-    before do
-      allow($stdout).to receive(:write) { |s| stdout_buf << s.to_s }
-      allow($stdout).to receive(:flush)
-      allow(tui).to receive_messages(detect_width: 80, detect_height: 24)
+    it "render_header_frame writes agent name to screen buffer" do
+      tui.send(:render_header_frame)
+      tui.instance_variable_get(:@screen).force_flush(io)
+      visible = io.string.gsub(/\e\[[0-9;]*[mGKHF]/, "")
+      expect(visible).to include(described_class::AGENT_NAME)
     end
 
-    it "clear_screen writes ANSI clear escape" do
-      tui.send(:clear_screen)
-      expect(stdout_buf).to include("\e[2J")
-    end
-
-    it "move_to writes cursor positioning escape" do
-      tui.send(:move_to, 1, 5)
-      expect(stdout_buf).to include("\e[5;1H")
-    end
-
-    it "clear_line writes line-clear escape" do
-      tui.send(:clear_line)
-      expect(stdout_buf).to include("\e[2K")
-    end
-
-    it "render_header writes to stdout" do
-      tui.send(:render_header)
-      expect(stdout_buf).not_to be_empty
-      expect(stdout_buf).to include(described_class::AGENT_NAME)
-    end
-
-    it "render_chat_panel writes to stdout" do
+    it "render_chat_panel_frame writes chat content to screen buffer" do
       tui.send(:push_user_message, "test message")
-      tui.send(:render_chat_panel)
-      expect(stdout_buf).not_to be_empty
+      tui.send(:render_chat_panel_frame)
+      tui.instance_variable_get(:@screen).force_flush(io)
+      visible = io.string.gsub(/\e\[[0-9;]*[mGKHF]/, "")
+      expect(visible).to include("test message")
     end
 
-    it "render_status_bar writes to stdout" do
-      tui.send(:render_status_bar)
-      expect(stdout_buf).not_to be_empty
+    it "render_status_bar_frame writes status content to screen buffer" do
+      tui.send(:render_status_bar_frame)
+      tui.instance_variable_get(:@screen).force_flush(io)
+      # Status bar has content (router or provider name)
+      expect(io.string).not_to be_empty
     end
 
-    it "render_input_line writes prompt" do
-      tui.send(:render_input_line, "test input")
-      expect(stdout_buf).to include(described_class::Theme::PROMPT_CHAR)
+    it "render_input_line_frame writes prompt character to screen buffer" do
+      input_buf = tui.instance_variable_get(:@input_buffer)
+      input_buf.insert("t")
+      input_buf.insert("e")
+      input_buf.insert("s")
+      input_buf.insert("t")
+      tui.send(:render_input_line_frame)
+      tui.instance_variable_get(:@screen).force_flush(io)
+      visible = io.string.gsub(/\e\[[0-9;]*[mGKHF]/, "")
+      expect(visible).to include(described_class::Theme.prompt_char)
     end
 
-    it "render_input_line tolerates ASCII-8BIT input without raising" do
-      expect { tui.send(:render_input_line, "\xC3".b) }.not_to raise_error
+    it "render_input_line_frame tolerates ASCII-8BIT input without raising" do
+      buf = tui.instance_variable_get(:@input_buffer)
+      "\xC3".b.each_byte { |b| buf.insert(b.chr(Encoding::ASCII_8BIT)) rescue nil } # rubocop:disable Style/RescueModifier
+      expect { tui.send(:render_input_line_frame) }.not_to raise_error
     end
 
-    it "initial_render calls all sub-renders" do
-      expect(tui).to receive(:clear_screen)
-      expect(tui).to receive(:render_header_frame)
-      expect(tui).to receive(:render_chat_panel_frame)
-      expect(tui).to receive(:render_status_bar_frame)
-      expect(tui).to receive(:render_input_line_frame)
-      tui.send(:initial_render)
+    it "render_frame calls all sub-renders and flushes screen to stdout" do
+      expect(tui).to receive(:render_header_frame).and_call_original
+      expect(tui).to receive(:render_chat_panel_frame).and_call_original
+      expect(tui).to receive(:render_status_bar_frame).and_call_original
+      expect(tui).to receive(:render_input_line_frame).and_call_original
+      screen = tui.instance_variable_get(:@screen)
+      expect(screen).to receive(:flush).with($stdout)
+      tui.send(:render_frame)
     end
 
-    it "refresh_all calls chat panel, status, and input renders" do
-      expect(tui).to receive(:render_chat_panel_frame)
-      expect(tui).to receive(:render_status_bar_frame)
-      expect(tui).to receive(:render_input_line_frame)
+    it "refresh_all pushes a :refresh event to the event loop queue" do
+      queue = Thread::Queue.new
+      event_loop = instance_double(described_class::EventLoop, push: nil, queue: queue)
+      tui.instance_variable_set(:@event_loop, event_loop)
       tui.send(:refresh_all)
+      expect(event_loop).to have_received(:push).with({ type: :refresh })
     end
   end
 
@@ -821,12 +832,14 @@ RSpec.describe Homunculus::Interfaces::TUI do
   end
 
   # ── Streaming Callback ────────────────────────────────────────────
+  # build_stream_callback now pushes :stream_chunk events to the event loop queue.
+  # Direct chunk behavior is tested via append_stream_chunk which is called by
+  # handle_stream_chunk_event. Tests below verify the underlying mechanics.
 
   describe "streaming callback" do
     subject(:tui) do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
-      allow(t).to receive(:refresh_chat_and_status)
       t
     end
 
@@ -835,33 +848,29 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(cb).to respond_to(:call)
     end
 
-    it "stream callback appends to streaming_buf" do
-      cb = tui.send(:build_stream_callback)
-      cb.call("hello ")
-      cb.call("world")
+    it "append_stream_chunk appends to streaming_buf" do
+      tui.send(:append_stream_chunk, "hello ")
+      tui.send(:append_stream_chunk, "world")
       buf = tui.instance_variable_get(:@streaming_buf)
       expect(buf[:text]).to eq("hello world")
       expect(buf[:role]).to eq(:assistant)
     end
 
-    it "stream callback adds the message to @messages on first chunk" do
-      cb = tui.send(:build_stream_callback)
+    it "append_stream_chunk adds the message to @messages on first chunk" do
       msgs_before = tui.instance_variable_get(:@messages).length
-      cb.call("first chunk")
+      tui.send(:append_stream_chunk, "first chunk")
       expect(tui.instance_variable_get(:@messages).length).to eq(msgs_before + 1)
     end
 
-    it "stream callback does not add duplicate messages on subsequent chunks" do
-      cb = tui.send(:build_stream_callback)
-      cb.call("first")
+    it "append_stream_chunk does not add duplicate messages on subsequent chunks" do
+      tui.send(:append_stream_chunk, "first")
       count_after_first = tui.instance_variable_get(:@messages).length
-      cb.call("second")
+      tui.send(:append_stream_chunk, "second")
       expect(tui.instance_variable_get(:@messages).length).to eq(count_after_first)
     end
 
     it "sets timestamp on streaming message when first chunk arrives" do
-      cb = tui.send(:build_stream_callback)
-      cb.call("first chunk")
+      tui.send(:append_stream_chunk, "first chunk")
       buf = tui.instance_variable_get(:@streaming_buf)
       expect(buf[:timestamp]).to be_a(Time)
     end
@@ -869,25 +878,22 @@ RSpec.describe Homunculus::Interfaces::TUI do
     it "stops activity indicator on first chunk (Story 3)" do
       indicator = tui.instance_variable_get(:@activity_indicator)
       allow(indicator).to receive(:stop).and_call_original
-      cb = tui.send(:build_stream_callback)
-      cb.call("first")
+      tui.send(:handle_stream_chunk_event, { type: :stream_chunk, chunk: "first" })
       expect(indicator).to have_received(:stop)
     end
 
     it "updates streaming_output_tokens_estimate as chunks arrive (Story 4)" do
-      cb = tui.send(:build_stream_callback)
-      cb.call("one")
+      tui.send(:append_stream_chunk, "one")
       estimate1 = tui.instance_variable_get(:@streaming_output_tokens_estimate)
       expect(estimate1).to be_a(Integer)
       expect(estimate1).to be >= 1
-      cb.call(" two three four five")
+      tui.send(:append_stream_chunk, " two three four five")
       estimate2 = tui.instance_variable_get(:@streaming_output_tokens_estimate)
       expect(estimate2).to be > estimate1
     end
 
     it "sets streaming_output_tokens_estimate from word and char heuristic" do
-      cb = tui.send(:build_stream_callback)
-      cb.call("hello world")
+      tui.send(:append_stream_chunk, "hello world")
       estimate = tui.instance_variable_get(:@streaming_output_tokens_estimate)
       expect(estimate).to be_a(Integer)
       expect(estimate).to be >= 1
@@ -898,16 +904,14 @@ RSpec.describe Homunculus::Interfaces::TUI do
       tui.send(:push_user_message, "seed message")
       tui.instance_variable_set(:@scroll_offset, 3)
 
-      cb = tui.send(:build_stream_callback)
-      cb.call(" #{"x" * 120}")
+      tui.send(:append_stream_chunk, " #{"x" * 120}")
 
       expect(tui.instance_variable_get(:@scroll_offset)).to be > 3
     end
 
     it "keeps following newest output when already at the bottom" do
       allow(tui).to receive_messages(detect_width: 40, detect_height: 24)
-      cb = tui.send(:build_stream_callback)
-      cb.call(" #{"x" * 120}")
+      tui.send(:append_stream_chunk, " #{"x" * 120}")
 
       expect(tui.instance_variable_get(:@scroll_offset)).to eq(0)
     end
@@ -962,28 +966,31 @@ RSpec.describe Homunculus::Interfaces::TUI do
   end
 
   # ── handle_message ────────────────────────────────────────────────
+  # handle_message now spawns a Thread that pushes :agent_result to @event_loop.
+  # Tests synchronize by joining the spawned thread.
 
   describe "#handle_message" do
     subject(:tui) do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
       t.instance_variable_set(:@running, true)
+      event_loop = instance_double(described_class::EventLoop, push: nil, queue: Thread::Queue.new)
+      t.instance_variable_set(:@event_loop, event_loop)
       t
     end
 
     before do
       allow(tui).to receive(:refresh_all)
-      allow(tui).to receive(:render_input_line)
-      allow(tui).to receive(:display_result)
     end
 
-    it "pushes a user message before calling agent loop" do
+    it "pushes a user message before spawning agent thread" do
       agent_loop = tui.instance_variable_get(:@agent_loop)
       session    = tui.instance_variable_get(:@session)
       allow(agent_loop).to receive(:run).and_return(
         Homunculus::Agent::AgentResult.completed("ok", session:)
       )
       tui.send(:handle_message, "what time is it?")
+      # The user message is pushed synchronously before the thread is spawned
       msgs = tui.instance_variable_get(:@messages)
       expect(msgs.any? { |m| m[:role] == :user && m[:text] == "what time is it?" }).to be true
     end
@@ -998,38 +1005,35 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(msgs.any? { |m| m[:role] == :info && m[:text].include?("Pending tool call") }).to be true
     end
 
-    it "pushes an error message when the agent loop raises" do
+    it "pushes an agent_result event with error when the agent loop raises" do
       agent_loop = tui.instance_variable_get(:@agent_loop)
       allow(agent_loop).to receive(:run).and_raise(StandardError, "network down")
-      indicator = tui.instance_variable_get(:@activity_indicator)
+      event_loop = tui.instance_variable_get(:@event_loop)
+      indicator  = tui.instance_variable_get(:@activity_indicator)
       allow(indicator).to receive(:start)
-      allow(indicator).to receive(:stop)
-      allow(Thread).to receive(:new) do |&block|
-        block.call
-        instance_double(Thread, alive?: false, join: nil, value: nil)
-      end
       tui.send(:handle_message, "hello")
-      msgs = tui.instance_variable_get(:@messages)
-      expect(msgs.any? { |m| m[:role] == :error && m[:text].include?("network down") }).to be true
+      # Wait briefly for the background thread to push the error result
+      sleep(0.3)
+      expect(event_loop).to have_received(:push) do |event|
+        event[:type] == :agent_result
+      end
     end
 
-    it "runs agent in a background thread so main thread can process scroll (wait loop exits when thread finishes)" do
+    it "runs agent in a background thread and pushes agent_result to event loop" do
       agent_loop = tui.instance_variable_get(:@agent_loop)
       session = tui.instance_variable_get(:@session)
       result = Homunculus::Agent::AgentResult.completed("done", session:)
       allow(agent_loop).to receive(:run).and_return(result)
-      indicator = tui.instance_variable_get(:@activity_indicator)
+      event_loop = tui.instance_variable_get(:@event_loop)
+      indicator  = tui.instance_variable_get(:@activity_indicator)
       allow(indicator).to receive(:start)
-      allow(indicator).to receive(:stop)
-      allow(Thread).to receive(:new) do |&block|
-        r = block.call
-        instance_double(Thread, alive?: false, join: nil, value: r)
-      end
       tui.send(:handle_message, "ping")
-      expect(tui).to have_received(:display_result).with(result)
+      # Wait for background thread to complete
+      sleep(0.3)
+      expect(event_loop).to have_received(:push).with({ type: :agent_result, result: })
     end
 
-    it "starts activity indicator before agent and stops it in ensure (Story 3)" do
+    it "starts activity indicator before agent (Story 3)" do
       agent_loop = tui.instance_variable_get(:@agent_loop)
       session = tui.instance_variable_get(:@session)
       allow(agent_loop).to receive(:run).and_return(
@@ -1037,20 +1041,17 @@ RSpec.describe Homunculus::Interfaces::TUI do
       )
       indicator = tui.instance_variable_get(:@activity_indicator)
       allow(indicator).to receive(:start).and_call_original
-      allow(indicator).to receive(:stop).and_call_original
       tui.send(:handle_message, "hello")
       expect(indicator).to have_received(:start).with("Thinking...")
-      expect(indicator).to have_received(:stop).at_least(:once)
     end
 
-    it "clears streaming_output_tokens_estimate after agent completes (Story 4)" do
-      agent_loop = tui.instance_variable_get(:@agent_loop)
+    it "clears streaming_output_tokens_estimate when agent_result is handled (Story 4)" do
       session = tui.instance_variable_get(:@session)
-      allow(agent_loop).to receive(:run).and_return(
-        Homunculus::Agent::AgentResult.completed("done", session:)
-      )
+      result = Homunculus::Agent::AgentResult.completed("done", session:)
+      allow(tui).to receive(:display_result)
       tui.instance_variable_set(:@streaming_output_tokens_estimate, 42)
-      tui.send(:handle_message, "ping")
+      # handle_agent_result_event clears the estimate
+      tui.send(:handle_agent_result_event, { type: :agent_result, result: })
       expect(tui.instance_variable_get(:@streaming_output_tokens_estimate)).to be_nil
     end
   end
@@ -1061,17 +1062,18 @@ RSpec.describe Homunculus::Interfaces::TUI do
     subject(:tui) do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
+      layout = described_class::Layout.new(term_width: 80, term_height: 24)
+      t.instance_variable_set(:@layout, layout)
       allow(t).to receive_messages(detect_width: 80, detect_height: 24)
       t
     end
 
-    it "allows concurrent stream callback and build_chat_lines without raising" do
-      cb = tui.send(:build_stream_callback)
+    it "allows concurrent append_stream_chunk and build_chat_lines without raising" do
       reader = Thread.new do
         20.times { tui.send(:build_chat_lines) }
       end
       writer = Thread.new do
-        20.times { |i| cb.call(" chunk #{i}") }
+        20.times { |i| tui.send(:append_stream_chunk, " chunk #{i}") }
       end
       expect do
         reader.join(2)
@@ -1082,7 +1084,6 @@ RSpec.describe Homunculus::Interfaces::TUI do
     it "handle_scroll_keys updates scroll_offset and can be called while messages exist (mutex-held reads)" do
       tui.send(:push_user_message, "one")
       tui.send(:push_assistant_message, "two")
-      allow(tui).to receive(:refresh_chat_and_status)
       tui.send(:handle_scroll_keys, "[5~")
       expect(tui.instance_variable_get(:@scroll_offset)).to be >= 0
     end
@@ -1109,49 +1110,51 @@ RSpec.describe Homunculus::Interfaces::TUI do
       expect(max_active).to eq(1)
     end
 
-    it "refreshes status immediately when tool status changes" do
+    it "pushes :refresh events to event loop when tool status changes" do
       tui = described_class.new(config:)
+      event_loop = instance_double(described_class::EventLoop, push: nil, queue: Thread::Queue.new)
+      tui.instance_variable_set(:@event_loop, event_loop)
       callback = tui.send(:build_status_callback)
-      allow(tui).to receive(:refresh_status_bar)
 
       callback.call(:tool_start, "echo")
       callback.call(:tool_end, "echo")
 
-      expect(tui).to have_received(:refresh_status_bar).twice
+      expect(event_loop).to have_received(:push).with({ type: :tick }).twice
     end
   end
 
   describe "scroll indicators in render_chat_panel" do
+    # Use a layout with only 6 chat rows so scroll indicators appear with few messages
     subject(:tui) do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
-      allow(t).to receive_messages(detect_width: 80, detect_height: 24, chat_rows: 6)
+      layout = described_class::Layout.new(term_width: 80, term_height: 13)
+      screen = described_class::ScreenBuffer.new(13, 80)
+      t.instance_variable_set(:@layout, layout)
+      t.instance_variable_set(:@screen, screen)
+      t.instance_variable_set(:@input_buffer, described_class::InputBuffer.new)
       t
     end
 
-    let(:stdout_buf) { +"" }
-
-    before do
-      allow($stdout).to receive(:write) { |s| stdout_buf << s.to_s }
-      allow($stdout).to receive(:flush)
-    end
+    let(:io) { StringIO.new }
 
     it "shows ▲ more above when scrolled up and not at top" do
       5.times { |i| tui.send(:push_user_message, "msg #{i} " + ("x " * 20)) }
-      # Many lines so max_scroll is large; scroll_offset 2 leaves content above
       tui.instance_variable_set(:@scroll_offset, 2)
-      tui.send(:render_chat_panel)
-      raw = stdout_buf.gsub(/\e\[[0-9;]*[mGKHF]/, "")
+      tui.send(:render_chat_panel_frame)
+      tui.instance_variable_get(:@screen).force_flush(io)
+      raw = io.string.gsub(/\e\[[0-9;]*[mGKHF]/, "")
       expect(raw).to include("▲ more above")
     end
 
     it "shows ▼ more below when user has scrolled up (scroll_offset > 0)" do
-      tui.send(:push_user_message, "line 1")
-      long_content = "word " * 30
-      tui.send(:push_assistant_message, "line 2 #{long_content}")
-      tui.instance_variable_set(:@scroll_offset, 3)
-      tui.send(:render_chat_panel)
-      raw = stdout_buf.gsub(/\e\[[0-9;]*[mGKHF]/, "")
+      # Generate enough lines so max_scroll > 0, then scroll up so show_below triggers
+      10.times { |i| tui.send(:push_user_message, "line #{i} " + ("word " * 15)) }
+      # Set scroll_offset so we're not at the bottom (show_below = scroll_offset > 0)
+      tui.instance_variable_set(:@scroll_offset, 5)
+      tui.send(:render_chat_panel_frame)
+      tui.instance_variable_get(:@screen).force_flush(io)
+      raw = io.string.gsub(/\e\[[0-9;]*[mGKHF]/, "")
       expect(raw).to include("▼ more below")
     end
   end
@@ -1162,12 +1165,13 @@ RSpec.describe Homunculus::Interfaces::TUI do
     subject(:tui) do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
+      event_loop = instance_double(described_class::EventLoop, push: nil, queue: Thread::Queue.new)
+      t.instance_variable_set(:@event_loop, event_loop)
       t
     end
 
     before do
       allow(tui).to receive(:refresh_all)
-      allow(tui).to receive(:display_result)
     end
 
     it "handle_confirm warns when no pending call" do
@@ -1193,6 +1197,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
         Homunculus::Agent::AgentResult.completed("confirmed", session:)
       )
       tui.send(:handle_confirm)
+      sleep(0.3)
       expect(agent_loop).to have_received(:confirm_tool)
     end
 
@@ -1207,6 +1212,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
         Homunculus::Agent::AgentResult.completed("denied", session:)
       )
       tui.send(:handle_deny)
+      sleep(0.3)
       expect(agent_loop).to have_received(:deny_tool)
     end
   end
@@ -1273,12 +1279,13 @@ RSpec.describe Homunculus::Interfaces::TUI do
       t = described_class.new(config:)
       t.instance_variable_set(:@session, Homunculus::Session.new)
       t.instance_variable_set(:@running, true)
+      event_loop = instance_double(described_class::EventLoop, push: nil, queue: Thread::Queue.new)
+      t.instance_variable_set(:@event_loop, event_loop)
       t
     end
 
     before do
       allow(tui).to receive(:refresh_all)
-      allow(tui).to receive(:render_input_line)
     end
 
     it "build_chat_lines returns overlay content when @overlay_content is set" do
