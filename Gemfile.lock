@@ -112,7 +112,7 @@ GEM
     reline (0.6.3)
       io-console (~> 0.5)
     rexml (3.4.4)
-    roda (3.101.0)
+    roda (3.102.0)
       rack
     rspec (3.13.2)
       rspec-core (~> 3.13.0)
@@ -197,7 +197,7 @@ DEPENDENCIES
   oj (~> 3.16)
   puma (~> 6.5)
   rack-test (~> 2.2)
-  roda (~> 3.85)
+  roda (~> 3.102)
   rspec (~> 3.13)
   rubocop (~> 1.69)
   rubocop-rspec (~> 3.3)

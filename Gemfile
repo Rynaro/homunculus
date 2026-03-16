@@ -6,7 +6,7 @@ ruby '>= 4.0'
 
 # Web framework
 gem 'puma', '~> 6.5'
-gem 'roda', '~> 3.85'
+gem 'roda', '~> 3.102'
 
 # Configuration
 gem 'dotenv', '~> 3.1'
