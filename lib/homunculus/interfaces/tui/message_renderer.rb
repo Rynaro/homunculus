@@ -50,11 +50,11 @@ module Homunculus
 
         def role_indicator(role)
           case role
-          when :user      then Theme::ROLE_USER
-          when :assistant then Theme::ROLE_ASSISTANT
-          when :info      then Theme::ROLE_INFO
-          when :error     then Theme::ROLE_ERROR
-          else                 Theme::ROLE_INFO
+          when :user      then Theme.role_user
+          when :assistant then Theme.role_assistant
+          when :info      then Theme.role_info
+          when :error     then Theme.role_error
+          else                 Theme.role_info
           end
         end
 
@@ -122,25 +122,7 @@ module Homunculus
 
           segments.each do |seg|
             if seg[:type] == :code
-              block = seg[:content].sub(/\A\r?\n/, "")
-              block_lines = block.split("\n", -1)
-              block_lines.shift if block_lines.length > 1 && block_lines.first.to_s.match?(/\A\w+\s*\z/)
-              block_lines.each do |line|
-                prefix = out.empty? ? prefix_plain : indent
-                wrapped = wrap_prefixed_text(
-                  "  #{line}",
-                  prefix:,
-                  continuation: indent,
-                  preserve_leading_space: true,
-                  strip_trailing: false
-                )
-                wrapped.each_with_index do |wrapped_line, index|
-                  current_prefix = index.zero? ? prefix : indent
-                  code_content = wrapped_line[current_prefix.length..] || ""
-                  prefix_text = out.empty? && index.zero? ? paint_role_line(current_prefix, color, true) : current_prefix
-                  out << "#{prefix_text}#{Theme.paint(code_content, :warm_highlight)}"
-                end
-              end
+              render_code_block(seg, out, prefix_plain, indent, color)
             else
               expanded = apply_inline_markdown(seg[:content])
               expanded.split("\n", -1).each do |line|
@@ -161,6 +143,54 @@ module Homunculus
 
           out = [paint_role_line(prefix_plain, color, true)] if out.empty?
           out
+        end
+
+        # Renders a fenced code block with a left border (│) and optional language label.
+        # Removes the language specifier line from the content and shows it as a label.
+        def render_code_block(seg, out, prefix_plain, indent, color)
+          block = seg[:content].sub(/\A\r?\n/, "")
+          block_lines = block.split("\n", -1)
+
+          # Extract language label from first line if it looks like a language specifier
+          lang_label = nil
+          lang_label = block_lines.shift.strip if block_lines.first.to_s.match?(/\A[a-zA-Z0-9_+-]+\s*\z/)
+
+          # Emit label line if we have one
+          if lang_label && !lang_label.empty?
+            prefix = out.empty? ? prefix_plain : indent
+            label_str = "#{prefix}#{Theme.paint("── #{lang_label} ", :muted)}"
+            out << paint_role_line(prefix_plain, color, true) if out.empty?
+            out << label_str
+          end
+
+          # Emit each code line with left border.
+          # Reduce effective width by 2 (for "│ " prefix) to keep total within @width.
+          prev_width = @width
+          @width = [@width - 2, 4].max
+          block_lines.each do |line|
+            prefix = out.empty? ? prefix_plain : indent
+            wrapped = wrap_prefixed_text(
+              line,
+              prefix:,
+              continuation: indent,
+              preserve_leading_space: true,
+              strip_trailing: false
+            )
+            wrapped.each_with_index do |wrapped_line, index|
+              current_prefix = index.zero? ? prefix : indent
+              code_content = wrapped_line[current_prefix.length..] || ""
+              border = Theme.paint("│", :muted)
+              prefix_text = if out.empty? && index.zero?
+                              paint_role_line(current_prefix, color, true)
+                            else
+                              current_prefix
+                            end
+              bg_code = Theme.ansi_for(:bg_code)
+              out << "#{prefix_text}#{border} #{bg_code}#{Theme.paint(code_content, :warm_highlight)}#{Theme::RESET}"
+            end
+          end
+        ensure
+          @width = prev_width
         end
 
         def split_code_blocks(text)
@@ -200,12 +230,19 @@ module Homunculus
           m = line.match(/\A(#+)\s+(.*)/)
           return line unless m
 
-          rest = m[2]
-          Theme.paint(rest, :bold)
+          level = m[1].length
+          rest  = m[2]
+          if level == 1
+            Theme.paint(rest, :bold, :underline)
+          elsif level == 2
+            Theme.paint(rest, :bold)
+          else
+            Theme.paint(rest, :accent)
+          end
         end
 
         def apply_list_line(line)
-          line = line.sub(/\A(\s*)[-*](\s+)/, "\\1#{Theme::BULLET_CHAR}\\2") if line.match(/\A\s*[-*]\s+/)
+          line = line.sub(/\A(\s*)[-*](\s+)/, "\\1#{Theme.bullet_char}\\2") if line.match(/\A\s*[-*]\s+/)
           line
         end
 
