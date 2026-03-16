@@ -11,11 +11,11 @@ module Homunculus
         TICK_MS = 180
         JOIN_TIMEOUT = 0.5
 
-        def initialize(redraw:)
+        def initialize(event_queue: nil)
           @message = ""
           @running = false
           @frame_index = 0
-          @redraw = redraw
+          @event_queue = event_queue
           @thread = nil
           @mutex = Mutex.new
         end
@@ -78,7 +78,7 @@ module Homunculus
             @mutex.synchronize do
               @frame_index = (@frame_index + 1) % FRAME_COUNT
             end
-            @redraw&.call
+            @event_queue&.push({ type: :spinner_tick })
             sleep(TICK_MS / 1000.0)
           end
         end
