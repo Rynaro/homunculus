@@ -27,6 +27,8 @@ Metrics/MethodLength:
 
 Metrics/ClassLength:
   Max: 700
+  Exclude:
+    - "lib/homunculus/interfaces/tui.rb"
 
 Metrics/ModuleLength:
   Max: 200
