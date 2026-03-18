@@ -29,6 +29,7 @@ parse_profile_flags() {
       --with-ollama)   COMPOSE_PROFILES+=(--profile ollama); shift ;;
       --with-searxng)  COMPOSE_PROFILES+=(--profile searxng); shift ;;
       --with-sandbox)  COMPOSE_PROFILES+=(--profile sandbox); shift ;;
+      --with-ntfy)     COMPOSE_PROFILES+=(--profile ntfy); shift ;;
       --build)         REMAINING_ARGS+=(--build); shift ;;
       *)               REMAINING_ARGS+=("$1"); shift ;;
     esac
@@ -177,6 +178,11 @@ cmd_doctor() {
     else
       echo -e "  ${YELLOW}!${NC} Port 8888 not bound (SearXNG not running?)"
     fi
+    if ss -tln 2>/dev/null | grep -q ':2586'; then
+      echo -e "  ${GREEN}✓${NC} Port 2586 in use (ntfy)"
+    else
+      echo -e "  ${YELLOW}!${NC} Port 2586 not bound (ntfy not running?)"
+    fi
   fi
   if docker ps --filter "name=homunculus-agent" --filter "status=running" -q 2>/dev/null | grep -q .; then
     echo ""
@@ -192,6 +198,14 @@ cmd_doctor() {
       echo -e "  ${GREEN}✓${NC} SearXNG reachable at 127.0.0.1:8888/healthz"
     else
       echo -e "  ${YELLOW}!${NC} SearXNG not reachable at 127.0.0.1:8888/healthz"
+    fi
+    echo ""
+    echo "ntfy reachability (from host):"
+    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:2586 2>/dev/null | grep -qE '2[0-9][0-9]|401|403'; then
+      echo -e "  ${GREEN}✓${NC} ntfy reachable at 127.0.0.1:2586"
+      echo -e "  ${GREEN}✓${NC} Subscribe at: http://localhost:2586 (topic: homunculus)"
+    else
+      echo -e "  ${YELLOW}!${NC} ntfy not reachable at 127.0.0.1:2586 (use --with-ntfy to start)"
     fi
   fi
   echo ""
@@ -210,7 +224,7 @@ cmd_obliterate() {
   done
   [[ -n "$confirmed" ]] || error "Obliterate requires --confirm. Use: bin/assistant obliterate --confirm"
   warn "Stopping all profiles and removing containers/networks..."
-  dc --profile ollama --profile searxng --profile sandbox down --remove-orphans "${do_volumes[@]}"
+  dc --profile ollama --profile searxng --profile sandbox --profile ntfy down --remove-orphans "${do_volumes[@]}"
   docker network prune -f
   if [[ ${#do_volumes[@]} -gt 0 ]]; then
     warn "Volumes removed. Data (memory, audit, scheduler) has been deleted."
@@ -273,13 +287,13 @@ Usage: bin/assistant <command> [args]
 Lifecycle:
   setup              First-run: create .env, build images, pull Ollama model
   build [args]       Build production images (pass --with-ollama/--with-searxng/--with-sandbox for profiles)
-  up [args]          Pre-flight + start. Use --with-ollama, --with-searxng, --with-sandbox, --build
+  up [args]          Pre-flight + start. Use --with-ollama, --with-searxng, --with-sandbox, --with-ntfy, --build
   down [args]        Stop services (preserves volumes)
   restart [args]     Down then up (pass same flags as up)
   regenerate [args]  Build images then restart (down + up with same flags)
 
 Recovery:
-  doctor             Diagnostic report: Docker, compose, .env, containers, ports, Ollama, SearXNG
+  doctor             Diagnostic report: Docker, compose, .env, containers, ports, Ollama, SearXNG, ntfy
   obliterate         Nuclear cleanup: stop all, remove containers/networks (requires --confirm)
                      Add --volumes to also remove data volumes (destructive)
 
@@ -300,6 +314,7 @@ Examples:
   bin/assistant up --with-ollama
   bin/assistant up --with-searxng
   bin/assistant up --with-ollama --with-searxng
+  bin/assistant up --with-ntfy
   bin/assistant up --with-ollama --with-searxng --with-sandbox --build
   bin/assistant obliterate --confirm
   bin/assistant doctor

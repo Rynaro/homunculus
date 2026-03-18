@@ -6,12 +6,14 @@ require_relative "../agent/warmup"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
 require_relative "sag_reachability"
+require_relative "familiars_setup"
 
 module Homunculus
   module Interfaces
     class CLI
       include SemanticLogger::Loggable
       include SAGReachability
+      include FamiliarsSetup
 
       BANNER = <<~BANNER
         🧪 Homunculus v%<version>s — Personal AI Agent
@@ -32,6 +34,7 @@ module Homunculus
         @running = false
         @session = nil
         @agent_loop = nil
+        @current_context_window = nil
 
         setup_components!
       end
@@ -65,6 +68,8 @@ module Homunculus
           @provider = Agent::ModelProvider.new(model_config)
         end
 
+        # Familiars must be initialized before tool registry (send_notification needs the dispatcher)
+        @familiars_dispatcher = build_familiars_dispatcher
         @tool_registry = build_tool_registry
         warn_sag_disabled unless @config.sag.enabled
         @prompt_builder = Agent::PromptBuilder.new(
@@ -176,6 +181,11 @@ module Homunculus
         end
 
         register_sag_tool(registry) if @config.sag.enabled
+
+        if @config.familiars.enabled && @familiars_dispatcher
+          registry.register(Tools::SendNotification.new(familiars_dispatcher: @familiars_dispatcher))
+        end
+
         registry
       end
 
@@ -252,8 +262,9 @@ module Homunculus
           break if input.nil? # EOF
 
           input = input.scrub
+          stripped = input.strip
 
-          case input.strip.downcase
+          case stripped.downcase
           when "exit", "quit"
             break
           when "help"
@@ -262,16 +273,83 @@ module Homunculus
             print_status
           when "scheduler"
             print_scheduler_status
+          when "familiars status"
+            print_familiars_status
+          when "familiars test"
+            run_familiars_test
           when "confirm"
             handle_confirm
           when "deny"
             handle_deny
+          when "models"
+            print_models
           when ""
             next
           else
-            handle_message(input)
+            if stripped.start_with?("model ") || stripped.downcase == "model"
+              handle_model_command(stripped)
+            elsif stripped.start_with?("routing ")
+              handle_routing_command(stripped)
+            else
+              handle_message(input)
+            end
           end
         end
+      end
+
+      def handle_model_command(input)
+        parts = input.split(/\s+/, 2)
+        tier_name = parts[1]&.strip
+
+        if tier_name.nil? || tier_name.empty?
+          if @session&.forced_tier
+            puts colorize("Current model override: #{@session.forced_tier}", :cyan)
+          else
+            puts colorize("No model override active. Routing is #{@session&.routing_enabled ? "on" : "off"}.", :cyan)
+          end
+          return
+        end
+
+        valid_tiers = available_tier_names
+        unless valid_tiers.empty? || valid_tiers.include?(tier_name)
+          puts colorize("Unknown tier: #{tier_name}. Available: #{valid_tiers.join(", ")}", :red)
+          return
+        end
+
+        @session.forced_tier = tier_name.to_sym
+        @session.forced_model = tier_name
+        @session.first_message_sent = false
+        puts colorize("Model override set to: #{tier_name}", :green)
+        return if @session.routing_enabled
+
+        puts colorize("  (routing is OFF — this tier will be used for all messages)", :dim)
+      end
+
+      def handle_routing_command(input)
+        parts = input.split(/\s+/, 2)
+        arg = parts[1]&.strip&.downcase
+
+        case arg
+        when "on"
+          @session.routing_enabled = true
+          puts colorize("Routing ON — the router will select the best model automatically.", :green)
+        when "off"
+          @session.routing_enabled = false
+          tier_info = @session.forced_tier ? " (using tier: #{@session.forced_tier})" : " (set a tier with: model <tier>)"
+          puts colorize("Routing OFF#{tier_info}. All messages will use the forced tier.", :yellow)
+        when nil, ""
+          state = @session&.routing_enabled ? "on" : "off"
+          tier  = @session&.forced_tier || "none"
+          puts colorize("Routing: #{state} | Forced tier: #{tier}", :cyan)
+        else
+          puts colorize("Usage: routing on | routing off", :yellow)
+        end
+      end
+
+      def available_tier_names
+        return [] unless @models_toml_data
+
+        (@models_toml_data["tiers"] || {}).keys
       end
 
       def handle_message(message)
@@ -321,6 +399,7 @@ module Homunculus
       def display_result(result)
         case result.status
         when :completed
+          update_context_window_from_result(result)
           puts "\n#{colorize("Homunculus:", :green)} #{result.response}" unless use_models_router?
 
         when :pending_confirmation
@@ -338,23 +417,73 @@ module Homunculus
         return unless @session.total_input_tokens.positive? || @session.total_output_tokens.positive?
 
         puts "" if use_models_router? && result.status == :completed
-        puts colorize(
-          "  [tokens: #{@session.total_input_tokens}↓ #{@session.total_output_tokens}↑ | " \
-          "turns: #{@session.turn_count}]",
-          :dim
-        )
+        ctx_win = resolved_context_window
+        usage_str = build_usage_summary_string(ctx_win)
+        puts colorize(usage_str, :dim)
+      end
+
+      def update_context_window_from_result(result)
+        return unless result.respond_to?(:context_window) && result.context_window&.positive?
+
+        @current_context_window = result.context_window
+      end
+
+      def resolved_context_window
+        @current_context_window || @config.models[:local]&.context_window
+      end
+
+      def build_usage_summary_string(ctx_win)
+        in_t  = @session.total_input_tokens
+        out_t = @session.total_output_tokens
+        base  = "  [tokens: #{in_t}↓ #{out_t}↑ | turns: #{@session.turn_count}]"
+        return base unless ctx_win&.positive?
+
+        used  = in_t + out_t
+        pct   = (used * 100.0 / ctx_win).round
+        "  [tokens: #{in_t}↓ #{out_t}↑ | turns: #{@session.turn_count} | ctx: #{used}/#{ctx_win} (#{pct}%)]"
+      end
+
+      def print_models
+        puts "\n#{colorize("Available model tiers:", :cyan)}"
+
+        tiers = @models_toml_data ? (@models_toml_data["tiers"] || {}) : {}
+        if tiers.empty?
+          model_cfg = resolve_model_config
+          model_name = model_cfg.default_model || model_cfg.model
+          puts "  #{colorize(@provider_name, :green)} — #{model_name}"
+        else
+          tiers.each do |name, cfg|
+            cfg = {} unless cfg.is_a?(Hash)
+            model_name = cfg["model"] || "unknown"
+            desc = cfg["description"] || ""
+            current = @session&.forced_tier&.to_s == name ? colorize(" (active override)", :yellow) : ""
+            puts "  #{colorize(name, :green)} — #{model_name}#{current}"
+            puts "    #{colorize(desc, :dim)}" unless desc.empty?
+          end
+        end
+
+        routing_state = @session&.routing_enabled ? colorize("on", :green) : colorize("off", :yellow)
+        forced = @session&.forced_tier ? colorize(@session.forced_tier.to_s, :yellow) : colorize("none", :dim)
+        puts "\n  Routing: #{routing_state} | Override tier: #{forced}"
+        puts colorize("  Use 'model <tier>' to set a tier override.", :dim)
+        puts colorize("  Use 'routing on|off' to toggle automatic routing.", :dim)
       end
 
       def print_help
         puts <<~HELP
 
           #{colorize("Commands:", :cyan)}
-            help      — Show this help message
-            status    — Show session status
-            scheduler — Show scheduler and heartbeat status
-            confirm   — Approve a pending tool action
-            deny      — Reject a pending tool action
-            quit/exit — Exit the CLI
+            help           — Show this help message
+            status         — Show session status
+            models         — List available model tiers
+            model <tier>   — Set model tier override
+            routing on|off — Toggle automatic model routing
+            scheduler         — Show scheduler and heartbeat status
+            familiars status  — Show Familiars notification channel status
+            familiars test    — Send a test notification to all channels
+            confirm           — Approve a pending tool action
+            deny           — Reject a pending tool action
+            quit/exit      — Exit the CLI
 
           #{colorize("Flags (at startup):", :cyan)}
             --model MODEL      Override the default model
@@ -531,13 +660,19 @@ module Homunculus
       def build_notification_service
         service = Scheduler::Notification.new(config: @config)
 
-        service.deliver_fn = lambda { |text, _priority|
+        interface_fn = lambda { |text, _priority|
           $stdout.puts "\n#{colorize("─" * 60, :magenta)}"
           $stdout.puts "#{colorize("🔔 Scheduler:", :magenta)} #{text}"
           $stdout.puts colorize("─" * 60, :magenta)
           $stdout.print "\n#{colorize("You: ", :cyan)}"
           $stdout.flush
         }
+
+        service.deliver_fn = wrap_deliver_fn_with_familiars(
+          original_fn: interface_fn,
+          dispatcher: @familiars_dispatcher,
+          title: "Homunculus Scheduler"
+        )
 
         service
       end
@@ -582,6 +717,44 @@ module Homunculus
             time = exec[:executed_at]&.strftime("%Y-%m-%d %H:%M") || "?"
             puts "    #{time} — #{exec[:status]} (#{exec[:duration_ms]}ms)"
           end
+        end
+      end
+
+      def print_familiars_status
+        unless @config.familiars.enabled
+          puts colorize("Familiars: disabled (set FAMILIARS_ENABLED=true to enable)", :yellow)
+          return
+        end
+
+        unless @familiars_dispatcher
+          puts colorize("Familiars: enabled in config but dispatcher not initialized", :yellow)
+          return
+        end
+
+        puts "\n#{colorize("Familiars Status:", :cyan)}"
+        @familiars_dispatcher.status.each do |name, info|
+          health_str = info[:healthy] ? colorize("healthy", :green) : colorize("unreachable", :red)
+          enabled_str = info[:enabled] ? colorize("enabled", :green) : colorize("disabled", :yellow)
+          puts "  #{colorize(name.to_s, :green)}: #{enabled_str}, #{health_str}, " \
+               "#{info[:deliveries]} delivered, #{info[:failures]} failed"
+        end
+      end
+
+      def run_familiars_test
+        unless @config.familiars.enabled && @familiars_dispatcher
+          puts colorize("Familiars is disabled.", :yellow)
+          return
+        end
+
+        puts colorize("Sending test notification to all enabled Familiars channels...", :cyan)
+        results = @familiars_dispatcher.notify(
+          title: "Homunculus Test",
+          message: "Familiars test notification from CLI. If you see this, notifications are working!",
+          priority: :normal
+        )
+        results.each do |channel, result|
+          icon = result == :delivered ? colorize("✓", :green) : colorize("✗", :red)
+          puts "  #{icon} #{channel}: #{result}"
         end
       end
 

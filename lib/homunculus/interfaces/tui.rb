@@ -16,10 +16,12 @@ require_relative "tui/event_loop"
 require_relative "tui/render_helpers"
 require_relative "tui/setup_helpers"
 require_relative "tui/message_helpers"
+require_relative "tui/model_management_helpers"
 require_relative "../agent/warmup"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
 require_relative "sag_reachability"
+require_relative "familiars_setup"
 
 module Homunculus
   module Interfaces
@@ -32,6 +34,8 @@ module Homunculus
       include TUI::RenderHelpers
       include TUI::SetupHelpers
       include TUI::MessageHelpers
+      include TUI::ModelManagementHelpers
+      include FamiliarsSetup
 
       HEADER_ROWS = 3
       STATUS_ROWS = 1
@@ -63,6 +67,7 @@ module Homunculus
         @current_tier   = nil
         @current_model  = nil
         @current_escalated_from = nil
+        @current_context_window = nil
         # Frame components created in initialize_frame_components!
         @layout          = nil
         @screen          = nil
@@ -117,6 +122,8 @@ module Homunculus
           @provider = Agent::ModelProvider.new(resolve_model_config)
         end
 
+        # Familiars must be initialized before tool registry (send_notification needs the dispatcher)
+        @familiars_dispatcher = build_familiars_dispatcher
         @tool_registry = build_tool_registry
         warn_sag_disabled unless @config.sag.enabled
         @prompt_builder = Agent::PromptBuilder.new(
@@ -194,9 +201,11 @@ module Homunculus
         $stderr.reopen(log_path, "a")
         $stdout.write("\e[?1049h")
         $stdout.write("\e[?25l")
+        $stdout.write("\e[?7l")
         $stdout.flush
         $stdin.respond_to?(:raw) ? $stdin.raw(&) : yield
       ensure
+        $stdout.write("\e[?7h")
         $stdout.write("\e[?25h")
         $stdout.write("\e[?1049l")
         $stdout.flush
@@ -207,6 +216,7 @@ module Homunculus
       end
 
       def teardown_terminal
+        $stdout.write("\e[?7h")
         $stdout.write("\e[?25h")
         $stdout.write("\e[?1049l")
         $stdout.flush
@@ -274,6 +284,9 @@ module Homunculus
             needs_full = true
           when :notification
             handle_notification_event(event)
+            needs_full = true
+          when :familiars_test_result
+            push_info_message("Familiars test results:\n#{event[:result]}")
             needs_full = true
           end
         end
@@ -566,13 +579,35 @@ module Homunculus
       def token_usage_label
         return nil unless @session
 
-        in_t  = @session.total_input_tokens
-        out_t = @session.total_output_tokens
+        in_t     = @session.total_input_tokens
+        out_t    = @session.total_output_tokens
         estimate = @messages_mutex.synchronize { @streaming_output_tokens_estimate }
-        if estimate&.positive?
-          "tokens: #{in_t}↓ #{out_t + estimate}↑ (+#{estimate}⚡)"
+        ctx_win  = resolved_context_window
+
+        base = if estimate&.positive?
+                 "tokens: #{in_t}↓ #{out_t + estimate}↑ (+#{estimate}⚡)"
+               else
+                 "tokens: #{in_t}↓ #{out_t}↑"
+               end
+
+        return base unless ctx_win&.positive?
+
+        # Use last-turn input tokens for ctx% — cumulative input inflates the ratio
+        # beyond 100% after a few turns and is misleading vs the per-call window.
+        last_in = @session.last_input_tokens
+        ctx_out = estimate&.positive? ? out_t + estimate : out_t
+        used    = last_in + ctx_out
+        pct     = (used * 100.0 / ctx_win).round
+        "#{base} ctx: #{format_token_count(used)}/#{format_token_count(ctx_win)} (#{pct}%)"
+      end
+
+      def format_token_count(n)
+        n = n.to_i
+        if n >= 1000
+          k = (n / 100.0).round / 10.0
+          k == k.to_i ? "#{k.to_i}k" : "#{k}k"
         else
-          "tokens: #{in_t}↓ #{out_t}↑"
+          n.to_s
         end
       end
 
@@ -630,7 +665,7 @@ module Homunculus
         if stripped.start_with?("/")
           cmd_key = @command_registry.match(stripped)
           if cmd_key
-            dispatch_slash_command(cmd_key)
+            dispatch_slash_command(cmd_key, stripped)
           else
             @messages_mutex.synchronize { @overlay_content = ["Unknown command. Type /help for available commands."] }
             refresh_all
@@ -656,7 +691,7 @@ module Homunculus
         end
       end
 
-      def dispatch_slash_command(cmd_key)
+      def dispatch_slash_command(cmd_key, full_input = cmd_key)
         handler = TUI::CommandRegistry::COMMANDS[cmd_key][:handler]
         case handler
         when :show_help then show_help
@@ -668,9 +703,66 @@ module Homunculus
                          refresh_all
         when :confirm then handle_confirm
         when :deny    then handle_deny
-        when :show_model then show_model
+        when :show_models then show_models
+        when :set_model   then handle_model_command(full_input)
+        when :set_routing then handle_routing_command(full_input)
+        when :handle_familiars_command then handle_familiars_command(full_input)
         when :quit then push_info_message("Shutting down...")
                         @event_loop&.push({ type: :shutdown })
+        end
+      end
+
+      def handle_familiars_command(full_input)
+        parts = full_input.strip.split(/\s+/, 2)
+        subcommand = parts[1]&.strip&.downcase
+
+        case subcommand
+        when "status"
+          show_familiars_status
+        when "test"
+          run_familiars_test
+        else
+          push_info_message("Usage: /familiars status | /familiars test")
+        end
+        refresh_all
+      end
+
+      def show_familiars_status
+        unless @config.familiars.enabled
+          push_info_message("Familiars: disabled (set FAMILIARS_ENABLED=true to enable)")
+          return
+        end
+        unless @familiars_dispatcher
+          push_info_message("Familiars: enabled in config but dispatcher not initialized")
+          return
+        end
+
+        lines = ["Familiars Status:"]
+        @familiars_dispatcher.status.each do |name, info|
+          health = info[:healthy] ? "healthy" : "unreachable"
+          enabled = info[:enabled] ? "enabled" : "disabled"
+          lines << "  #{name}: #{enabled}, #{health}, #{info[:deliveries]} delivered, #{info[:failures]} failed"
+        end
+        push_info_message(lines.join("\n"))
+      end
+
+      def run_familiars_test
+        unless @config.familiars.enabled && @familiars_dispatcher
+          push_info_message("Familiars is disabled.")
+          return
+        end
+
+        push_info_message("Sending Familiars test notification...")
+        Thread.new do
+          results = @familiars_dispatcher.notify(
+            title: "Homunculus Test",
+            message: "Familiars test from TUI. If you see this, notifications are working!",
+            priority: :normal
+          )
+          result_lines = results.map { |ch, r| "  #{ch}: #{r}" }.join("\n")
+          @event_loop&.push({ type: :familiars_test_result, result: result_lines })
+        rescue StandardError => e
+          logger.error("Familiars test error", error: e.message)
         end
       end
 
@@ -697,9 +789,19 @@ module Homunculus
         end
       end
 
+      def update_context_window_from_result(result)
+        return unless result.respond_to?(:context_window) && result.context_window&.positive?
+
+        @current_context_window = result.context_window
+      end
+
+      def resolved_context_window
+        @current_context_window || @config.models[:local]&.context_window
+      end
+
       def build_error_result(error)
         Struct.new(:status, :error, :response, :tier, :model, :escalated_from,
-                   :pending_tool_call).new(:error, error.message, nil, nil, nil, nil, nil)
+                   :pending_tool_call, :context_window).new(:error, error.message, nil, nil, nil, nil, nil, nil)
       end
 
       def handle_confirm
@@ -751,6 +853,7 @@ module Homunculus
             @current_model = result.model
             @current_escalated_from = result.escalated_from
           end
+          update_context_window_from_result(result)
           push_assistant_message(result.response) unless use_models_router?
         when :pending_confirmation
           tc = result.pending_tool_call

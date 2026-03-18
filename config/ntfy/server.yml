@@ -1,0 +1,31 @@
+# ntfy server configuration for Homunculus
+# See: https://docs.ntfy.sh/config/
+#
+# SECURITY: auth-default-access is deny-all. Users must authenticate with tokens.
+# Token management: use `docker exec homunculus-ntfy ntfy user add` and `ntfy access`
+# to create publisher (agent) and subscriber (user) tokens.
+
+# Bind address — ntfy listens on all interfaces inside the container.
+# The Docker port mapping (127.0.0.1:2586:80) restricts external access to localhost only.
+listen-http: ":80"
+
+# Base URL shown in Web UI and Web Push payloads.
+# Users access via http://localhost:2586 after Docker port mapping.
+base-url: "http://localhost:2586"
+
+# Cache file for message persistence (survives container restart).
+cache-file: "/var/cache/ntfy/cache.db"
+
+# Keep messages for 12 hours by default.
+cache-duration: "12h"
+
+# Behind a reverse proxy? Set to true if you add nginx/traefik in front.
+behind-proxy: false
+
+# Auth: deny all access unless authenticated with a valid token.
+# This prevents unauthorized publishing or subscription.
+# For development/testing without auth, comment these out and restart ntfy.
+auth-default-access: "deny-all"
+
+# Auth database path.
+auth-file: "/var/cache/ntfy/user.db"

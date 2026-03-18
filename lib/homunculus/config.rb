@@ -192,8 +192,27 @@ module Homunculus
     attribute :searxng_timeout, Types::Strict::Integer.default(15)
   end
 
+  class FamiliarsNtfyConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :enabled, Types::Strict::Bool.default(false)
+    attribute :url, Types::Strict::String.default("http://ntfy:80")
+    attribute :topic, Types::Strict::String.default("homunculus")
+    attribute :publish_token, Types::Strict::String.default("")
+  end
+
+  class FamiliarsConfig < Dry::Struct
+    transform_keys(&:to_sym)
+
+    attribute :enabled, Types::Strict::Bool.default(false)
+    attribute :notify_on, Types::Strict::Array.of(Types::Strict::String).default(
+      %w[session_complete confirmation_needed error].freeze
+    )
+    attribute :ntfy, FamiliarsNtfyConfig
+  end
+
   class Config
-    attr_reader :gateway, :models, :agent, :tools, :memory, :security, :telegram, :mqtt, :scheduler, :sag
+    attr_reader :gateway, :models, :agent, :tools, :memory, :security, :telegram, :mqtt, :scheduler, :sag, :familiars
 
     def self.load(path = "config/default.toml")
       raw = TomlRB.load_file(path)
@@ -228,6 +247,7 @@ module Homunculus
       @mqtt = build_mqtt(mqtt_raw)
       @scheduler = build_scheduler(raw.fetch("scheduler", {}))
       @sag = SAGConfig.new(raw.fetch("sag", {}))
+      @familiars = build_familiars(raw.fetch("familiars", {}))
 
       @gateway.validate!
     end
@@ -287,6 +307,21 @@ module Homunculus
       MQTTConfig.new(mqtt_hash)
     end
 
+    def build_familiars(raw)
+      raw = raw.dup
+      ntfy_raw = raw.delete("ntfy") || {}
+      familiars_hash = raw.transform_keys(&:to_sym)
+
+      # Override ntfy credentials and settings from environment variables
+      ntfy_hash = ntfy_raw.transform_keys(&:to_sym)
+      ntfy_hash[:url] = ENV.fetch("FAMILIARS_NTFY_URL", ntfy_hash.fetch(:url, "http://ntfy:80"))
+      ntfy_hash[:topic] = ENV.fetch("FAMILIARS_NTFY_TOPIC", ntfy_hash.fetch(:topic, "homunculus"))
+      ntfy_hash[:publish_token] = ENV.fetch("FAMILIARS_NTFY_TOKEN", ntfy_hash.fetch(:publish_token, ""))
+
+      familiars_hash[:ntfy] = FamiliarsNtfyConfig.new(ntfy_hash)
+      FamiliarsConfig.new(familiars_hash)
+    end
+
     class << self
       private
 
@@ -322,17 +357,47 @@ module Homunculus
         end
 
         # SearXNG URL from env (supports host or dockerized SearXNG)
-        if ENV.key?("SEARXNG_URL")
-          raw["sag"] ||= {}
-          raw["sag"]["searxng_url"] = ENV.fetch("SEARXNG_URL")
+        raw["sag"] ||= {}
+        raw["sag"]["searxng_url"] = ENV.fetch("SEARXNG_URL") if ENV.key?("SEARXNG_URL")
+
+        override_ollama_and_familiars_from_env!(raw)
+      end
+
+      def override_ollama_and_familiars_from_env!(raw)
+        # Ollama request timeout from env (e.g. Docker / slow instances)
+        if ENV.key?("OLLAMA_TIMEOUT_SECONDS")
+          raw["models"] ||= {}
+          raw["models"]["local"] ||= {}
+          raw["models"]["local"]["timeout_seconds"] = ENV.fetch("OLLAMA_TIMEOUT_SECONDS").to_i
         end
 
-        # Ollama request timeout from env (e.g. Docker / slow instances)
-        return unless ENV.key?("OLLAMA_TIMEOUT_SECONDS")
+        # Familiars enabled/disabled from env
+        if ENV.key?("FAMILIARS_ENABLED")
+          raw["familiars"] ||= {}
+          raw["familiars"]["enabled"] = ENV.fetch("FAMILIARS_ENABLED").downcase == "true"
+        end
 
-        raw["models"] ||= {}
-        raw["models"]["local"] ||= {}
-        raw["models"]["local"]["timeout_seconds"] = ENV.fetch("OLLAMA_TIMEOUT_SECONDS").to_i
+        # Familiars ntfy channel config from env
+        if ENV.key?("FAMILIARS_NTFY_ENABLED")
+          raw["familiars"] ||= {}
+          raw["familiars"]["ntfy"] ||= {}
+          raw["familiars"]["ntfy"]["enabled"] = ENV.fetch("FAMILIARS_NTFY_ENABLED").downcase == "true"
+        end
+        if ENV.key?("FAMILIARS_NTFY_URL")
+          raw["familiars"] ||= {}
+          raw["familiars"]["ntfy"] ||= {}
+          raw["familiars"]["ntfy"]["url"] = ENV.fetch("FAMILIARS_NTFY_URL")
+        end
+        if ENV.key?("FAMILIARS_NTFY_TOPIC")
+          raw["familiars"] ||= {}
+          raw["familiars"]["ntfy"] ||= {}
+          raw["familiars"]["ntfy"]["topic"] = ENV.fetch("FAMILIARS_NTFY_TOPIC")
+        end
+        if ENV.key?("FAMILIARS_NTFY_TOKEN")
+          raw["familiars"] ||= {}
+          raw["familiars"]["ntfy"] ||= {}
+          raw["familiars"]["ntfy"]["publish_token"] = ENV.fetch("FAMILIARS_NTFY_TOKEN")
+        end
       end
     end
   end

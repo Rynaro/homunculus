@@ -8,11 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 bin/assistant setup                        # first-run: .env, build, optional Ollama pull
-bin/assistant up [--with-ollama] [--with-searxng] [--with-sandbox] [--build]  # start (pre-flight runs automatically)
+bin/assistant up [--with-ollama] [--with-searxng] [--with-sandbox] [--with-ntfy] [--build]  # start (pre-flight runs automatically)
 bin/assistant down                         # stop
 bin/assistant restart                      # down then up
 bin/assistant regenerate                   # build images then restart (down + up)
-bin/assistant doctor                       # diagnostics: Docker, .env, containers, ports, Ollama, SearXNG
+bin/assistant doctor                       # diagnostics: Docker, .env, containers, ports, Ollama, SearXNG, ntfy
 bin/assistant obliterate --confirm [--volumes]  # nuclear cleanup
 bin/assistant status                       # container states
 bin/assistant logs [service]               # tail logs
@@ -66,6 +66,8 @@ Homunculus is a self-hosted personal AI agent system. Requests flow through:
 User Input → Interface → Session → Agent Loop → Model Router → LLM Provider
                                        ↓
                               Tool Registry → Sandbox (Docker) → Audit Log
+                                       ↓
+                          Familiars::Dispatcher → ntfy (HTTP push) / Log channel
 ```
 
 ### Key Modules
@@ -78,7 +80,9 @@ User Input → Interface → Session → Agent Loop → Model Router → LLM Pro
 
 **`lib/homunculus/config.rb`** — Dry::Struct-based configuration. TOML source (`config/default.toml`) with environment variable overrides. Multiple nested domains: Gateway, Models, Agent, Tools, Memory, Security, MQTT, Scheduler, SAG (SearXNG-backed web_research).
 
-**`lib/homunculus/tools/`** — 19 pluggable tools (echo, datetime, workspace read/write/delete/list, memory search/save/daily_log/curate, files, shell, web, mqtt, scheduler_manage, web_research). Elevated tools (shell, file_write, web_fetch, mqtt_publish, scheduler_manage, memory_curate, workspace_delete) require user confirmation. Execution is sandboxed in an isolated Docker container. The `web_research` tool uses a SAG pipeline backed by a SearXNG search engine instance.
+**`lib/homunculus/tools/`** — 20 pluggable tools (echo, datetime, workspace read/write/delete/list, memory search/save/daily_log/curate, files, shell, web, mqtt, scheduler_manage, web_research, send_notification). Elevated tools (shell, file_write, web_fetch, mqtt_publish, scheduler_manage, memory_curate, workspace_delete, send_notification) require user confirmation. Execution is sandboxed in an isolated Docker container. The `web_research` tool uses a SAG pipeline backed by a SearXNG search engine instance.
+
+**`lib/homunculus/familiars/`** — Pluggable OS-level notification system (Familiars). Disabled by default (`[familiars] enabled = false`). `Dispatcher` fans out to all enabled channels; `Channel` is the base class. Built-in channels: `Log` (always-on, SemanticLogger) and `Ntfy` (HTTP POST to self-hosted ntfy sidecar). Agent loop triggers notifications for session_complete, confirmation_needed, and error events. CLI/TUI expose `familiars status` and `familiars test` commands. ntfy Docker profile: `--with-ntfy`. ntfy credentials in `.env` only: `FAMILIARS_NTFY_TOKEN`.
 
 **`lib/homunculus/memory/`** — SQLite + FTS5 full-text search. Optional vector embeddings via Ollama (nomic-embed-text). Daily memory logs under `workspace/memory/`.
 
@@ -211,6 +215,15 @@ Do not proceed on any of the following without explicit user confirmation:
   `lib/homunculus/interfaces/telegram.rb`.
 - The HTTP gateway (`lib/homunculus/gateway/server.rb`) must remain bound to
   `127.0.0.1` only. Never suggest changing to `0.0.0.0`.
+
+### Familiars / ntfy Notifications
+
+- `FAMILIARS_NTFY_TOKEN` (publish token) must never appear in `config/default.toml` — `.env` only.
+- `config/ntfy/server.yml` is committed; it contains no secrets (only server settings).
+- The ntfy container is only accessible via `127.0.0.1:2586` — never expose on `0.0.0.0`.
+- `send_notification` is an elevated tool requiring user confirmation. Never add it to `tools.safe_commands`.
+- `Familiars` is disabled by default (`enabled = false`). Do not enable it in default config.
+- ntfy's `auth-default-access: deny-all` must never be changed to `allow-read-write` — tokens protect topics.
 
 ### Long-Term Memory (MEMORY.md)
 

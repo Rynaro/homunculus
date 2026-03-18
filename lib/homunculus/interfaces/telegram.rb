@@ -5,9 +5,11 @@ require "fileutils"
 require "telegram/bot"
 require_relative "telegram/memory_curation"
 require_relative "telegram/warmup_integration"
+require_relative "telegram/familiars_integration"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
 require_relative "sag_reachability"
+require_relative "familiars_setup"
 
 module Homunculus
   module Interfaces
@@ -16,6 +18,8 @@ module Homunculus
       include MemoryCuration
       include SAGReachability
       include WarmupIntegration
+      include FamiliarsSetup
+      include FamiliarsIntegration
 
       # Per-chat session entry
       SessionEntry = Struct.new(:session, :last_activity, keyword_init: true)
@@ -72,6 +76,7 @@ module Homunculus
           @providers[:anthropic] = Agent::ModelProvider.new(@config.models[:escalation])
         end
 
+        @familiars_dispatcher = build_familiars_dispatcher # must precede build_tool_registry
         @tool_registry = build_tool_registry
         warn_sag_disabled unless @config.sag.enabled
 
@@ -148,12 +153,16 @@ module Homunculus
         service = Scheduler::Notification.new(config: @config)
 
         # Wire up the Telegram delivery function: sends to all allowed users
-        service.deliver_fn = lambda { |text, priority|
-          delivery_targets.each do |chat_id|
-            prefix = priority == :high ? "🚨 *HIGH PRIORITY*\n\n" : "🔔 "
-            send_long_message(chat_id, "#{prefix}#{text}")
-          end
-        }
+        service.deliver_fn = wrap_deliver_fn_with_familiars(
+          dispatcher: @familiars_dispatcher,
+          title: "Homunculus Scheduler",
+          original_fn: lambda { |text, priority|
+            delivery_targets.each do |chat_id|
+              prefix = priority == :high ? "🚨 *HIGH PRIORITY*\n\n" : "🔔 "
+              send_long_message(chat_id, "#{prefix}#{text}")
+            end
+          }
+        )
 
         service
       end
@@ -184,6 +193,7 @@ module Homunculus
           registry.register(Tools::MemoryCurate.new(memory_store: @memory_store))
         end
         register_sag_tool(registry) if @config.sag.enabled
+        register_familiars_tool(registry) if @config.familiars.enabled && @familiars_dispatcher
         registry
       end
 
