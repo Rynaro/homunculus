@@ -168,17 +168,33 @@ module Homunculus
       def complete_via_models_router(session, system_prompt)
         windowed = apply_context_window(session.messages_for_api)
         messages_with_system = [{ role: "system", content: system_prompt }, *windowed]
+        tier = resolve_session_tier(session)
         mr = @models_router.generate(
           messages: messages_with_system,
           tools: @tools.definitions,
-          tier: nil,
+          tier: tier,
           skill_name: nil,
           user_message: session.messages_for_api.select { |m| m[:role] == "user" }.last&.dig(:content).to_s,
           stream: @stream_callback ? true : false,
           &@stream_callback
         )
+        # When routing is on and a forced_tier was used for the first call, clear it now
+        if session.routing_enabled && session.forced_tier && !session.first_message_sent
+          session.first_message_sent = true
+          session.forced_tier = nil
+        end
         response = models_response_to_loop_response(mr)
         [response, mr.provider || :ollama]
+      end
+
+      # Determines the tier override to pass to models_router#generate based on session state.
+      # Returns nil when routing should determine tier normally.
+      def resolve_session_tier(session)
+        return nil unless session.respond_to?(:forced_tier) && session.forced_tier
+        # Routing ON: use forced_tier on first call only; return nil once first_message_sent
+        return nil if session.routing_enabled && session.first_message_sent
+
+        session.forced_tier
       end
 
       # Converts Models::Response to the shape the Loop expects (ModelProvider::Response duck type).
@@ -300,11 +316,12 @@ module Homunculus
       # LLM call is needed).
       def dispatch_turn(response, session)
         tier, model, escalated_from = tier_metadata_from_response(response)
+        ctx_window = context_window_for_response(response)
 
         case response.stop_reason
         when "end_turn", "stop"
           session.add_message(role: :assistant, content: response.content)
-          AgentResult.completed(response.content, session:, tier:, model:, escalated_from:)
+          AgentResult.completed(response.content, session:, tier:, model:, escalated_from:, context_window: ctx_window)
 
         when "tool_use"
           session.add_message(role: :assistant, content: response.content, tool_calls: response.tool_calls)
@@ -314,7 +331,7 @@ module Homunculus
 
             if @tools.requires_confirmation?(tool_call.name)
               session.pending_tool_call = tool_call
-              return AgentResult.pending_confirmation(tool_call, session:)
+              return AgentResult.pending_confirmation(tool_call, session:, context_window: ctx_window)
             end
 
             result = execute_tool(tool_call, session)
@@ -328,13 +345,13 @@ module Homunculus
           session.add_message(role: :assistant, content: response.content)
           AgentResult.completed(
             "#{response.content}\n\n⚠️ Response was truncated due to token limit.",
-            session:, tier:, model:, escalated_from:
+            session:, tier:, model:, escalated_from:, context_window: ctx_window
           )
 
         else
           logger.warn("Unknown stop reason", stop_reason: response.stop_reason, session_id: session.id)
           session.add_message(role: :assistant, content: response.content)
-          AgentResult.completed(response.content, session:, tier:, model:, escalated_from:)
+          AgentResult.completed(response.content, session:, tier:, model:, escalated_from:, context_window: ctx_window)
         end
       end
 
@@ -347,6 +364,18 @@ module Homunculus
           raw.respond_to?(:model) ? raw.model : nil,
           raw.respond_to?(:escalated_from) ? raw.escalated_from&.to_s : nil
         ]
+      end
+
+      # Returns the context window size for the given response.
+      # Prefers the tier config when routing through models_router; falls back to config.
+      def context_window_for_response(response)
+        raw = response.raw_response
+        if raw.respond_to?(:tier) && raw.tier && @models_router
+          tier_str = raw.tier.to_s
+          tier_cfg = @models_router.config.dig("tiers", tier_str)
+          return tier_cfg["context_window"].to_i if tier_cfg&.key?("context_window")
+        end
+        resolve_context_window
       end
 
       # ── Continue & Tool Execution ─────────────────────────────────────
@@ -520,23 +549,28 @@ module Homunculus
 
     # Result type for the agent loop.
     # Optional tier/model/escalated_from are set when using models_router (from Models::Response).
-    AgentResult = Data.define(:status, :response, :error, :pending_tool_call, :session, :tier, :model, :escalated_from) do
-      def self.completed(response, session:, tier: nil, model: nil, escalated_from: nil)
+    # context_window reflects the active model's maximum context size in tokens.
+    AgentResult = Data.define(:status, :response, :error, :pending_tool_call, :session, :tier, :model,
+                              :escalated_from, :context_window) do
+      def self.completed(response, session:, tier: nil, model: nil, escalated_from: nil, context_window: nil)
         new(
           status: :completed, response:, error: nil, pending_tool_call: nil, session:,
-          tier:, model:, escalated_from:
+          tier:, model:, escalated_from:, context_window:
         )
       end
 
-      def self.pending_confirmation(tool_call, session:)
+      def self.pending_confirmation(tool_call, session:, context_window: nil)
         new(
           status: :pending_confirmation, response: nil, error: nil, pending_tool_call: tool_call, session:,
-          tier: nil, model: nil, escalated_from: nil
+          tier: nil, model: nil, escalated_from: nil, context_window:
         )
       end
 
       def self.error(error, session:)
-        new(status: :error, response: nil, error:, pending_tool_call: nil, session:, tier: nil, model: nil, escalated_from: nil)
+        new(
+          status: :error, response: nil, error:, pending_tool_call: nil, session:,
+          tier: nil, model: nil, escalated_from: nil, context_window: nil
+        )
       end
 
       def completed? = status == :completed
