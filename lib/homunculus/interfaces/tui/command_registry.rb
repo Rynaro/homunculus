@@ -11,7 +11,9 @@ module Homunculus
           "/clear" => { description: "Clear chat history", handler: :clear },
           "/confirm" => { description: "Approve pending tool call", handler: :confirm },
           "/deny" => { description: "Reject pending tool call", handler: :deny },
-          "/model" => { description: "Show current model tier and routing info", handler: :show_model },
+          "/models" => { description: "List available model tiers", handler: :show_models },
+          "/model" => { description: "Set model tier override (/model <tier>)", handler: :set_model },
+          "/routing" => { description: "Toggle routing (/routing on|off)", handler: :set_routing },
           "/quit" => { description: "Exit", handler: :quit },
           "/exit" => { description: "Exit (alias)", handler: :quit },
           "/q" => { description: "Exit (alias)", handler: :quit }
