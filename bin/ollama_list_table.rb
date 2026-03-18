@@ -34,7 +34,8 @@ fleet.each do |entry|
   tier = entry["tier"]
   model = entry["model"]
   desc = (entry["description"] || "").slice(0, 30)
-  size = installed[model]
+  # Try exact match first, then fall back to name:latest (Ollama adds :latest when no tag is specified)
+  size = installed[model] || installed["#{model}:latest"]
   if size
     installed_count += 1
     total_bytes += size
