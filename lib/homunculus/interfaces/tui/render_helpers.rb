@@ -99,7 +99,7 @@ module Homunculus
           dot = status_bar_model_label ? "#{model_tier_dot} #{status_bar_model_label}" : nil
           [
             dot,
-            token_usage_label ? "#{token_usage_label} tokens" : nil,
+            token_usage_label,
             turn_label&.sub(/\Aturns: /, "turn "),
             elapsed_session_time,
             resolved_status_part(indicator:, scroll_offset:)

@@ -1,0 +1,209 @@
+---
+metadata:
+  title: "Model Management — Ollama Availability Fix + CLI/TUI Model Controls"
+  date: "2026-03-17"
+  complexity: 7
+  confidence: 90
+  decision: AUTO_PROCEED
+
+stories:
+  - id: "1.1"
+    title: "Fix model name matching in fleet list"
+    feature: "Fix Ollama Model Availability Detection"
+    timebox: "1d"
+    risk: P2
+    dependencies: []
+    files:
+      - bin/ollama_list_table.rb
+      - bin/ollama
+    action: >
+      Normalize model name lookup: try exact match first, then try "#{model}:latest".
+      Apply same normalization in missing_models() bash function.
+    acceptance_criteria:
+      - "GIVEN nomic-embed-text installed as nomic-embed-text:latest WHEN bin/ollama list THEN shows Installed"
+      - "GIVEN qwen3:14b installed with exact name WHEN bin/ollama list THEN shows Installed"
+    agent_hint:
+      class: builder
+      context_files:
+        - bin/ollama_list_table.rb
+        - bin/ollama
+        - bin/ollama_fleet_parser.rb
+      validation: "manual: bin/ollama list"
+
+  - id: "3.1"
+    title: "Add session-level model override state"
+    feature: "Model Switch Command"
+    timebox: "1d"
+    risk: P1
+    dependencies: []
+    files:
+      - lib/homunculus/session.rb
+      - spec/session_spec.rb
+    action: >
+      Add attr_accessor :forced_tier (nil default) and :routing_enabled (true default)
+      to Session. Initialize in constructor. Update specs.
+    acceptance_criteria:
+      - "GIVEN new Session WHEN defaults THEN forced_tier nil, routing_enabled true"
+      - "GIVEN session.forced_tier = :coder WHEN accessed THEN returns :coder"
+    agent_hint:
+      class: builder
+      context_files:
+        - lib/homunculus/session.rb
+        - spec/session_spec.rb
+      validation: "bin/dev test spec/session_spec.rb"
+
+  - id: "3.2"
+    title: "Wire session model override into Agent Loop"
+    feature: "Model Switch Command"
+    timebox: "2d"
+    risk: P0
+    dependencies: ["3.1"]
+    files:
+      - lib/homunculus/agent/loop.rb
+      - spec/agent/loop_spec.rb
+    action: >
+      In complete_via_models_router, check session.forced_tier and session.routing_enabled.
+      Pass tier: to router.generate() accordingly. Clear forced_tier after first call when routing ON.
+    acceptance_criteria:
+      - "GIVEN forced_tier=:coder, routing=off WHEN message THEN router.generate(tier: :coder)"
+      - "GIVEN forced_tier=:workhorse, routing=on WHEN first message THEN tier passed then cleared"
+      - "GIVEN forced_tier=:cloud_standard, routing=off WHEN budget exceeded THEN Router budget gate fires"
+    agent_hint:
+      class: reasoner
+      context_files:
+        - lib/homunculus/agent/loop.rb
+        - lib/homunculus/agent/models/router.rb
+        - lib/homunculus/session.rb
+        - spec/agent/loop_spec.rb
+      validation: "bin/dev test spec/agent/loop_spec.rb"
+
+  - id: "2.1"
+    title: "/models command in TUI"
+    feature: "Model Listing Command"
+    timebox: "2d"
+    risk: P2
+    dependencies: ["3.1"]
+    files:
+      - lib/homunculus/interfaces/tui/command_registry.rb
+      - lib/homunculus/interfaces/tui/message_helpers.rb
+      - lib/homunculus/interfaces/tui.rb
+      - spec/interfaces/tui_spec.rb
+    action: >
+      Add /models to CommandRegistry. Add show_models overlay method reading @models_toml_data.
+      Show all tiers, current selection, routing status. Check Ollama availability.
+    acceptance_criteria:
+      - "GIVEN TUI with models_router WHEN /models THEN overlay shows all tiers with status"
+      - "GIVEN Ollama unreachable WHEN /models THEN local tiers show unavailable"
+    agent_hint:
+      class: builder
+      context_files:
+        - lib/homunculus/interfaces/tui/command_registry.rb
+        - lib/homunculus/interfaces/tui/message_helpers.rb
+        - lib/homunculus/interfaces/tui.rb
+        - lib/homunculus/interfaces/tui/setup_helpers.rb
+        - config/models.toml
+      validation: "bin/dev test spec/interfaces/tui_spec.rb"
+
+  - id: "2.2"
+    title: "models command in CLI"
+    feature: "Model Listing Command"
+    timebox: "1d"
+    risk: P2
+    dependencies: ["3.1"]
+    files:
+      - lib/homunculus/interfaces/cli.rb
+      - spec/interfaces/cli_warmup_spec.rb
+    action: >
+      Add 'models' command to loop_input. Add print_models method.
+      Wire @models_toml_data in setup_components!. Update help text.
+    acceptance_criteria:
+      - "GIVEN CLI session WHEN models THEN formatted tier table prints to stdout"
+    agent_hint:
+      class: builder
+      context_files:
+        - lib/homunculus/interfaces/cli.rb
+        - config/models.toml
+      validation: "bin/dev test spec/interfaces/cli_warmup_spec.rb"
+
+  - id: "3.3"
+    title: "/model <tier> command in TUI + CLI"
+    feature: "Model Switch Command"
+    timebox: "2d"
+    risk: P1
+    dependencies: ["3.1", "3.2"]
+    files:
+      - lib/homunculus/interfaces/tui/command_registry.rb
+      - lib/homunculus/interfaces/tui.rb
+      - lib/homunculus/interfaces/tui/message_helpers.rb
+      - lib/homunculus/interfaces/cli.rb
+    action: >
+      Extend dispatch to pass full input for argument extraction.
+      Validate tier against @models_toml_data tiers. Set session.forced_tier.
+    acceptance_criteria:
+      - "GIVEN TUI WHEN /model coder THEN session.forced_tier=:coder, confirmation shown"
+      - "GIVEN /model nonexistent WHEN processing THEN error lists valid tiers"
+      - "GIVEN CLI WHEN model coder THEN same behavior"
+    agent_hint:
+      class: builder
+      context_files:
+        - lib/homunculus/interfaces/tui/command_registry.rb
+        - lib/homunculus/interfaces/tui.rb
+        - lib/homunculus/interfaces/tui/message_helpers.rb
+        - lib/homunculus/interfaces/cli.rb
+      validation: "bin/dev test spec/interfaces/tui_spec.rb spec/interfaces/cli_warmup_spec.rb"
+
+  - id: "4.1"
+    title: "/routing on|off command"
+    feature: "Routing Toggle"
+    timebox: "2d"
+    risk: P1
+    dependencies: ["3.1", "3.2"]
+    files:
+      - lib/homunculus/interfaces/tui/command_registry.rb
+      - lib/homunculus/interfaces/tui/message_helpers.rb
+      - lib/homunculus/interfaces/tui.rb
+      - lib/homunculus/interfaces/cli.rb
+    action: >
+      Add /routing command. on=session.routing_enabled=true, off=false.
+      No arg shows current state. Update status bar to show routing state.
+    acceptance_criteria:
+      - "GIVEN routing ON WHEN /routing off THEN session.routing_enabled=false, status shows routing off"
+      - "GIVEN routing OFF, forced_tier=:coder WHEN message THEN all use coder"
+      - "GIVEN /routing no arg WHEN processing THEN shows current state"
+    agent_hint:
+      class: builder
+      context_files:
+        - lib/homunculus/interfaces/tui/command_registry.rb
+        - lib/homunculus/interfaces/tui/message_helpers.rb
+        - lib/homunculus/interfaces/tui.rb
+        - lib/homunculus/interfaces/cli.rb
+      validation: "bin/dev test"
+
+  - id: "5.1"
+    title: "Full test suite + lint validation"
+    feature: "Validation"
+    timebox: "1d"
+    risk: P0
+    dependencies: ["1.1", "2.1", "2.2", "3.1", "3.2", "3.3", "4.1"]
+    files: []
+    action: "Run bin/dev test (0 failures, >= 75% coverage). Run bin/dev lint (no new offenses)."
+    acceptance_criteria:
+      - "GIVEN all stories done WHEN bin/dev test THEN 0 failures, coverage >= 75%"
+      - "GIVEN all code WHEN bin/dev lint THEN no new offenses"
+    agent_hint:
+      class: builder
+      validation: "bin/dev test && bin/dev lint"
+
+execution_plan:
+  parallel_group_1:
+    - "1.1"
+    - "3.1"
+  sequential_after_3_1:
+    - "3.2"
+  parallel_group_2:
+    - "2.1"
+    - "2.2"
+    - "3.3"
+    - "4.1"
+  final:
+    - "5.1"

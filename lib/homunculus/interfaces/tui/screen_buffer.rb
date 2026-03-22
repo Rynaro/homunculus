@@ -123,18 +123,24 @@ module Homunculus
         end
 
         # Full redraw — emit every cell unconditionally (resize / initial render).
+        # Uses per-cell absolute positioning to avoid wide-character column drift.
         def force_flush(io)
           buf = +""
           buf << "\e[2J\e[H"
           terminal_style = BLANK_CELL
+          last_row = nil
+          last_col = nil
 
           @rows.times do |r|
             @cols.times do |c|
-              buf << "\e[#{r + 1};#{c + 1}H" if c.zero?
               cur = @current[r][c]
+
+              buf << "\e[#{r + 1};#{c + 1}H" if last_row != r + 1 || last_col != c + 1
               buf << cell_escape(cur, terminal_style)
               buf << cur.char
               terminal_style = cur
+              last_row = r + 1
+              last_col = c + 2
 
               # Inline copy
               prev = @previous[r][c]

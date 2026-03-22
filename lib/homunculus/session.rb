@@ -4,8 +4,10 @@ require "securerandom"
 
 module Homunculus
   class Session
-    attr_reader :id, :messages, :created_at, :total_input_tokens, :total_output_tokens, :turn_count
-    attr_accessor :status, :pending_tool_call, :source, :forced_provider, :active_agent, :enabled_skills
+    attr_reader :id, :messages, :created_at, :total_input_tokens, :total_output_tokens,
+                :last_input_tokens, :turn_count
+    attr_accessor :status, :pending_tool_call, :source, :forced_provider, :active_agent, :enabled_skills,
+                  :forced_model, :forced_tier, :routing_enabled, :first_message_sent
 
     def initialize
       @id = SecureRandom.uuid
@@ -14,6 +16,7 @@ module Homunculus
       @updated_at = Time.now
       @total_input_tokens = 0
       @total_output_tokens = 0
+      @last_input_tokens = 0
       @turn_count = 0
       @status = :active
       @pending_tool_call = nil
@@ -21,6 +24,10 @@ module Homunculus
       @forced_provider = nil
       @active_agent = :default
       @enabled_skills = Set.new
+      @forced_model = nil
+      @forced_tier = nil
+      @routing_enabled = true
+      @first_message_sent = false
     end
 
     def add_message(role:, content:, tool_calls: nil)
@@ -56,7 +63,8 @@ module Homunculus
     def track_usage(usage)
       return unless usage
 
-      @total_input_tokens += usage.input_tokens || 0
+      @last_input_tokens   = usage.input_tokens || 0
+      @total_input_tokens += @last_input_tokens
       @total_output_tokens += usage.output_tokens || 0
     end
 

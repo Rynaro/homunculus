@@ -933,7 +933,7 @@ RSpec.describe Homunculus::Interfaces::TUI do
       session.track_usage(usage)
       tui.instance_variable_set(:@session, session)
       label = tui.send(:token_usage_label)
-      expect(label).to eq("tokens: 100↓ 50↑")
+      expect(label).to include("tokens: 100↓ 50↑")
     end
 
     it "includes streaming estimate when set (Story 4)" do
@@ -961,7 +961,111 @@ RSpec.describe Homunculus::Interfaces::TUI do
         tui.instance_variable_set(:@streaming_output_tokens_estimate, nil)
       end
       label = tui.send(:token_usage_label)
-      expect(label).to eq("tokens: 300↓ 120↑")
+      expect(label).to include("tokens: 300↓ 120↑")
+    end
+  end
+
+  # ── context window display ────────────────────────────────────────
+
+  describe "#token_usage_label with context window" do
+    it "includes ctx: usage summary when context_window is available" do
+      tui = described_class.new(config:)
+      session = Homunculus::Session.new
+      session.track_usage(
+        Homunculus::Agent::ModelProvider::TokenUsage.new(input_tokens: 1000, output_tokens: 500)
+      )
+      tui.instance_variable_set(:@session, session)
+      tui.instance_variable_set(:@current_context_window, 32_768)
+      label = tui.send(:token_usage_label)
+      expect(label).to include("ctx:")
+      expect(label).to include("/32.8k")
+      expect(label).to match(/\(\d+%\)/)
+    end
+
+    it "omits ctx: summary when context_window is nil" do
+      tui = described_class.new(config:)
+      session = Homunculus::Session.new
+      session.track_usage(
+        Homunculus::Agent::ModelProvider::TokenUsage.new(input_tokens: 100, output_tokens: 50)
+      )
+      tui.instance_variable_set(:@session, session)
+      tui.instance_variable_set(:@current_context_window, nil)
+      # Override resolved_context_window to return nil
+      allow(tui).to receive(:resolved_context_window).and_return(nil)
+      label = tui.send(:token_usage_label)
+      expect(label).not_to include("ctx:")
+    end
+
+    it "uses @current_context_window when set (overrides config default)" do
+      tui = described_class.new(config:)
+      session = Homunculus::Session.new
+      session.track_usage(
+        Homunculus::Agent::ModelProvider::TokenUsage.new(input_tokens: 500, output_tokens: 200)
+      )
+      tui.instance_variable_set(:@session, session)
+      tui.instance_variable_set(:@current_context_window, 200_000)
+      label = tui.send(:token_usage_label)
+      expect(label).to include("/200k")
+    end
+  end
+
+  describe "#format_token_count" do
+    it "returns plain number for values below 1000" do
+      tui = described_class.new(config:)
+      expect(tui.send(:format_token_count, 512)).to eq("512")
+    end
+
+    it "formats 1000 as 1k" do
+      tui = described_class.new(config:)
+      expect(tui.send(:format_token_count, 1000)).to eq("1k")
+    end
+
+    it "formats 32768 as 32.8k" do
+      tui = described_class.new(config:)
+      expect(tui.send(:format_token_count, 32_768)).to eq("32.8k")
+    end
+
+    it "formats 200000 as 200k" do
+      tui = described_class.new(config:)
+      expect(tui.send(:format_token_count, 200_000)).to eq("200k")
+    end
+
+    it "formats 4231 as 4.2k" do
+      tui = described_class.new(config:)
+      expect(tui.send(:format_token_count, 4231)).to eq("4.2k")
+    end
+  end
+
+  describe "#resolved_context_window" do
+    it "returns @current_context_window when set" do
+      tui = described_class.new(config:)
+      tui.instance_variable_set(:@current_context_window, 16_384)
+      expect(tui.send(:resolved_context_window)).to eq(16_384)
+    end
+
+    it "falls back to config local context_window when @current_context_window is nil" do
+      tui = described_class.new(config:)
+      tui.instance_variable_set(:@current_context_window, nil)
+      expect(tui.send(:resolved_context_window)).to eq(config.models[:local].context_window)
+    end
+  end
+
+  describe "#update_context_window_from_result" do
+    it "sets @current_context_window from result when positive" do
+      tui = described_class.new(config:)
+      result = Homunculus::Agent::AgentResult.completed(
+        "ok", session: Homunculus::Session.new, context_window: 16_384
+      )
+      tui.send(:update_context_window_from_result, result)
+      expect(tui.instance_variable_get(:@current_context_window)).to eq(16_384)
+    end
+
+    it "does not update @current_context_window when result has no context_window" do
+      tui = described_class.new(config:)
+      tui.instance_variable_set(:@current_context_window, 32_768)
+      result = Homunculus::Agent::AgentResult.completed("ok", session: Homunculus::Session.new)
+      tui.send(:update_context_window_from_result, result)
+      expect(tui.instance_variable_get(:@current_context_window)).to eq(32_768)
     end
   end
 
@@ -1448,6 +1552,188 @@ RSpec.describe Homunculus::Interfaces::TUI do
       it "returns humanized fallback for unknown steps" do
         result = tui.send(:warmup_step_label, :some_future_step)
         expect(result).to eq("Some future step")
+      end
+    end
+  end
+
+  # ── Model Management Commands ──────────────────────────────────────
+
+  describe "model management commands" do
+    subject(:tui) do
+      t = described_class.new(config:)
+      t.instance_variable_set(:@session, Homunculus::Session.new)
+      t.instance_variable_set(:@running, true)
+      event_loop = instance_double(described_class::EventLoop, push: nil, queue: Thread::Queue.new)
+      t.instance_variable_set(:@event_loop, event_loop)
+      t
+    end
+
+    before { allow(tui).to receive(:refresh_all) }
+
+    describe "#show_models" do
+      it "sets overlay with tier list" do
+        tui.instance_variable_set(:@models_toml_data, {
+                                    "tiers" => { "workhorse" => { "model" => "qwen2.5:14b", "description" => "Default" } }
+                                  })
+
+        tui.send(:show_models)
+
+        overlay = tui.instance_variable_get(:@overlay_content)
+        expect(overlay).not_to be_nil
+        joined = overlay.join("\n")
+        expect(joined).to include("workhorse")
+        expect(joined).to include("qwen2.5:14b")
+      end
+
+      it "includes routing status" do
+        tui.send(:show_models)
+
+        overlay = tui.instance_variable_get(:@overlay_content)
+        expect(overlay.join("\n")).to match(/Routing: (on|off)/)
+      end
+
+      it "marks the active override tier" do
+        tui.instance_variable_set(:@models_toml_data, {
+                                    "tiers" => { "coder" => { "model" => "qwen2.5:14b" }, "workhorse" => {} }
+                                  })
+        session = tui.instance_variable_get(:@session)
+        session.forced_tier = :coder
+
+        tui.send(:show_models)
+
+        overlay = tui.instance_variable_get(:@overlay_content)
+        expect(overlay.join("\n")).to include("active override")
+      end
+    end
+
+    describe "#handle_model_command" do
+      context "with no argument" do
+        it "calls show_model" do
+          allow(tui).to receive(:show_model)
+
+          tui.send(:handle_model_command, "/model")
+
+          expect(tui).to have_received(:show_model)
+        end
+      end
+
+      context "with a valid tier" do
+        before do
+          tui.instance_variable_set(:@models_toml_data, { "tiers" => { "coder" => { "model" => "qwen2.5:14b" } } })
+        end
+
+        it "sets session.forced_tier" do
+          tui.send(:handle_model_command, "/model coder")
+
+          session = tui.instance_variable_get(:@session)
+          expect(session.forced_tier).to eq(:coder)
+        end
+
+        it "resets first_message_sent" do
+          session = tui.instance_variable_get(:@session)
+          session.first_message_sent = true
+
+          tui.send(:handle_model_command, "/model coder")
+
+          expect(session.first_message_sent).to be false
+        end
+
+        it "sets overlay with confirmation message" do
+          tui.send(:handle_model_command, "/model coder")
+
+          overlay = tui.instance_variable_get(:@overlay_content)
+          expect(overlay.join).to include("coder")
+        end
+      end
+
+      context "with an unknown tier" do
+        before do
+          tui.instance_variable_set(:@models_toml_data, { "tiers" => { "coder" => {} } })
+        end
+
+        it "sets overlay with error message listing valid tiers" do
+          tui.send(:handle_model_command, "/model nonexistent")
+
+          overlay = tui.instance_variable_get(:@overlay_content)
+          joined = overlay.join("\n")
+          expect(joined).to include("Unknown tier")
+          expect(joined).to include("coder")
+        end
+
+        it "does not change session.forced_tier" do
+          session = tui.instance_variable_get(:@session)
+          session.forced_tier = :coder
+
+          tui.send(:handle_model_command, "/model nonexistent")
+
+          expect(session.forced_tier).to eq(:coder)
+        end
+      end
+    end
+
+    describe "#handle_routing_command" do
+      it "enables routing with /routing on" do
+        session = tui.instance_variable_get(:@session)
+        session.routing_enabled = false
+
+        tui.send(:handle_routing_command, "/routing on")
+
+        expect(session.routing_enabled).to be true
+        overlay = tui.instance_variable_get(:@overlay_content)
+        expect(overlay.join).to include("Routing ON")
+      end
+
+      it "disables routing with /routing off" do
+        session = tui.instance_variable_get(:@session)
+        session.routing_enabled = true
+
+        tui.send(:handle_routing_command, "/routing off")
+
+        expect(session.routing_enabled).to be false
+        overlay = tui.instance_variable_get(:@overlay_content)
+        expect(overlay.join).to include("Routing OFF")
+      end
+
+      it "shows current state when no argument given" do
+        tui.send(:handle_routing_command, "/routing")
+
+        overlay = tui.instance_variable_get(:@overlay_content)
+        expect(overlay.join).to match(/Routing: (on|off)/)
+      end
+
+      it "shows usage for unknown argument" do
+        tui.send(:handle_routing_command, "/routing sideways")
+
+        overlay = tui.instance_variable_get(:@overlay_content)
+        expect(overlay.join).to include("Usage")
+      end
+    end
+
+    describe "process_input dispatches new commands" do
+      it "dispatches /models to show_models" do
+        allow(tui).to receive(:show_models)
+
+        tui.send(:process_input, "/models")
+
+        expect(tui).to have_received(:show_models)
+      end
+
+      it "dispatches /model <tier> to handle_model_command" do
+        tui.instance_variable_set(:@models_toml_data, { "tiers" => { "coder" => {} } })
+
+        tui.send(:process_input, "/model coder")
+
+        session = tui.instance_variable_get(:@session)
+        expect(session.forced_tier).to eq(:coder)
+      end
+
+      it "dispatches /routing off to handle_routing_command" do
+        session = tui.instance_variable_get(:@session)
+        session.routing_enabled = true
+
+        tui.send(:process_input, "/routing off")
+
+        expect(session.routing_enabled).to be false
       end
     end
   end
