@@ -33,7 +33,7 @@ gem 'bcrypt', '~> 3.1'
 gem 'oj', '~> 3.16'
 
 # HTML parsing
-gem 'nokogiri', '~> 1.16'
+gem 'nokogiri', '~> 1.19'
 
 # MQTT client
 gem 'mqtt', '~> 0.6'
