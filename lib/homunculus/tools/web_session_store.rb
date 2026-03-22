@@ -6,7 +6,7 @@ module Homunculus
       MAX_SESSIONS = 10
       SESSION_TTL = 3600 # 1 hour
 
-      SessionEntry = Struct.new(:cookies, :created_at, keyword_init: true)
+      SessionEntry = Struct.new(:cookies, :created_at)
 
       def initialize(max_sessions: MAX_SESSIONS, ttl: SESSION_TTL)
         @sessions = {}

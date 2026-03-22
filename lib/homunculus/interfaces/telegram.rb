@@ -18,7 +18,7 @@ module Homunculus
       include WarmupIntegration
 
       # Per-chat session entry
-      SessionEntry = Struct.new(:session, :last_activity, keyword_init: true)
+      SessionEntry = Struct.new(:session, :last_activity)
 
       def initialize(config:, provider_name: nil)
         @config = config

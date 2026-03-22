@@ -320,8 +320,8 @@ module Homunculus
                     .where(Sequel.like(:id, "#{source}#%"))
                     .select_map(:id)
                     .select do |id|
-                      idx = id.split("#").last.to_i
-                      idx >= current_count
+          idx = id.split("#").last.to_i
+          idx >= current_count
         end
 
         return if stale_ids.empty?
