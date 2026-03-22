@@ -22,6 +22,9 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    ignore:
+      - dependency-name: "actions/upload-artifact"
+        update-types: ["version-update:semver-major"]
 
   # Docker
   - package-ecosystem: "docker"
