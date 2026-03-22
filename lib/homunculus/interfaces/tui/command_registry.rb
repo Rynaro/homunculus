@@ -14,6 +14,8 @@ module Homunculus
           "/models" => { description: "List available model tiers", handler: :show_models },
           "/model" => { description: "Set model tier override (/model <tier>)", handler: :set_model },
           "/routing" => { description: "Toggle routing (/routing on|off)", handler: :set_routing },
+          "/familiars" => { description: "Familiars status or test (/familiars status|test)",
+                            handler: :handle_familiars_command },
           "/quit" => { description: "Exit", handler: :quit },
           "/exit" => { description: "Exit (alias)", handler: :quit },
           "/q" => { description: "Exit (alias)", handler: :quit }

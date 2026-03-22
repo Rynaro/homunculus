@@ -96,6 +96,28 @@ services:
     volumes:
       - ./workspace:/workspace:ro
 
+  # Optional: ntfy notification sidecar.
+  # Start with: docker compose --profile ntfy up -d
+  # REQUIRED: Add FAMILIARS_NTFY_URL=http://ntfy:80 and FAMILIARS_NTFY_TOKEN=<token> to .env
+  # User subscribes via browser at http://localhost:2586 (topic: homunculus)
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    container_name: homunculus-ntfy
+    profiles:
+      - ntfy
+    command: serve
+    volumes:
+      - ./config/ntfy:/etc/ntfy:ro
+      - ntfy-cache:/var/cache/ntfy
+    networks:
+      - homunculus-net
+      - ntfy-egress
+    ports:
+      - "127.0.0.1:2586:80"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
 networks:
   homunculus-net:
     driver: bridge
@@ -106,9 +128,13 @@ networks:
     driver: bridge  # Allows Ollama to pull models from registry.ollama.ai
   searxng-egress:
     driver: bridge  # Allows SearXNG to reach external search engines
+  ntfy-egress:
+    driver: bridge  # Allows ntfy to send Web Push notifications to FCM/APNS
 
 volumes:
   homunculus-data:
     driver: local
   ollama-data:
+    driver: local
+  ntfy-cache:
     driver: local
