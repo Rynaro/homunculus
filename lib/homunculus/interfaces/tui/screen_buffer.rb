@@ -7,7 +7,7 @@ module Homunculus
       # flush(io) diffs current vs previous frame and emits a single atomic write.
       # force_flush(io) redraws everything unconditionally (resize / initial render).
       class ScreenBuffer
-        Cell = Struct.new(:char, :fg, :bg, :bold, :dim, :italic, :underline, keyword_init: true) do
+        Cell = Struct.new(:char, :fg, :bg, :bold, :dim, :italic, :underline) do
           def ==(other)
             char == other.char && fg == other.fg && bg == other.bg &&
               bold == other.bold && dim == other.dim &&

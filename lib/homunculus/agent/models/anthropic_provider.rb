@@ -100,7 +100,7 @@ module Homunculus
         end
 
         # Accumulator for SSE stream parsing state.
-        StreamState = Struct.new(:content, :tool_calls, :usage_data, :current_tool, keyword_init: true)
+        StreamState = Struct.new(:content, :tool_calls, :usage_data, :current_tool)
         private_constant :StreamState
 
         private
@@ -209,11 +209,11 @@ module Homunculus
           tool_calls = content_blocks
                        .select { |b| b["type"] == "tool_use" }
                        .map do |tc|
-                         {
-                           id: tc["id"],
-                           name: tc["name"],
-                           arguments: normalize_arguments(tc["input"])
-                         }
+            {
+              id: tc["id"],
+              name: tc["name"],
+              arguments: normalize_arguments(tc["input"])
+            }
           end
 
           usage_data = parsed["usage"] || {}

@@ -178,7 +178,7 @@ RSpec.describe Homunculus::Tools::WebExtract do
   end
 
   it "rejects too many selectors" do
-    many = (1..21).each_with_object({}) { |i, h| h["s#{i}"] = ".class#{i}" }
+    many = (1..21).to_h { |i| ["s#{i}", ".class#{i}"] }
     result = tool.execute(
       arguments: { url: "http://example.com", selectors: Oj.dump(many) },
       session:

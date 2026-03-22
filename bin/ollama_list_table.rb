@@ -10,7 +10,7 @@ fleet = JSON.parse($stdin.read)
 installed_path = ENV.fetch("INSTALLED_JSON", nil)
 installed = if installed_path && File.file?(installed_path)
               data = JSON.parse(File.read(installed_path))
-              (data["models"] || []).each_with_object({}) { |m, h| h[m["name"]] = m["size"].to_i }
+              (data["models"] || []).to_h { |m| [m["name"], m["size"].to_i] }
             else
               {}
             end

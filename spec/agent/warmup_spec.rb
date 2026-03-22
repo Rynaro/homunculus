@@ -181,8 +181,7 @@ RSpec.describe Homunculus::Agent::Warmup do
       warmup.start!(callback: callback)
       warmup.wait!
 
-      step_events = events.reject { |e, _, _| e == :done }
-      done_events = events.select { |e, _, _| e == :done }
+      done_events, step_events = events.partition { |e, _, _| e == :done }
 
       expect(done_events.size).to eq(1)
       expect(done_events.first[2]).to include(:elapsed_ms, :results)

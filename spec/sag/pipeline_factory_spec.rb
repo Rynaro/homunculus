@@ -5,7 +5,7 @@ require_relative "../../lib/homunculus/sag/pipeline_factory"
 
 RSpec.describe Homunculus::SAG::PipelineFactory do
   let(:sag_config) do
-    Struct.new(:searxng_url, :searxng_categories, :top_n_results, :searxng_timeout, :max_tokens, keyword_init: true).new(
+    Struct.new(:searxng_url, :searxng_categories, :top_n_results, :searxng_timeout, :max_tokens).new(
       searxng_url: "http://localhost:8888",
       searxng_categories: ["general"],
       top_n_results: 5,

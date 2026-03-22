@@ -16,7 +16,7 @@ module Homunculus
       def process(response:, snippets:)
         return empty_result(response) if response.nil? || response.strip.empty?
 
-        snippet_by_rank = snippets.each_with_object({}) { |s, h| h[s.rank] = s }
+        snippet_by_rank = snippets.to_h { |s| [s.rank, s] }
         cited_ranks = extract_citation_ranks(response)
 
         cited = []
