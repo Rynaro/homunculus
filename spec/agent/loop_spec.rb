@@ -71,6 +71,28 @@ RSpec.describe Homunculus::Agent::Loop do
       expect(result.model).to be_nil
       expect(result.escalated_from).to be_nil
     end
+
+    it "stores context_window when provided" do
+      result = Homunculus::Agent::AgentResult.completed(
+        "OK",
+        session:,
+        context_window: 32_768
+      )
+      expect(result.context_window).to eq(32_768)
+    end
+
+    it "leaves context_window nil when not provided" do
+      result = Homunculus::Agent::AgentResult.completed("OK", session:)
+      expect(result.context_window).to be_nil
+    end
+
+    it "stores context_window on pending_confirmation result" do
+      tool_call = Homunculus::Agent::ModelProvider::ToolCall.new(
+        id: "tc-1", name: "shell_exec", arguments: {}
+      )
+      result = Homunculus::Agent::AgentResult.pending_confirmation(tool_call, session:, context_window: 16_384)
+      expect(result.context_window).to eq(16_384)
+    end
   end
 
   def make_response(content:, tool_calls: nil, stop_reason: "end_turn", raw_response: {})
@@ -310,6 +332,86 @@ RSpec.describe Homunculus::Agent::Loop do
       # Should have a tool result indicating denial
       tool_msg = session.messages.find { |m| m[:role] == :tool }
       expect(tool_msg[:content]).to include("denied")
+    end
+  end
+
+  describe "session tier override (models_router mode)" do
+    def make_models_response_simple(content)
+      double(
+        content: content,
+        tool_calls: nil,
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+        model: "test-model",
+        finish_reason: "stop",
+        provider: :ollama
+      )
+    end
+
+    let(:models_router) { instance_double(Homunculus::Agent::Models::Router) }
+
+    let(:loop_with_router) do
+      described_class.new(
+        config:,
+        models_router:,
+        tools: tool_registry,
+        prompt_builder:,
+        audit:
+      )
+    end
+
+    context "when routing_enabled is false and forced_tier is set" do
+      it "passes forced_tier to router.generate on every call" do
+        session.forced_tier = :coder
+        session.routing_enabled = false
+        allow(models_router).to receive(:generate).and_return(make_models_response_simple("answer"))
+
+        loop_with_router.run("Hello", session)
+
+        expect(models_router).to have_received(:generate).with(hash_including(tier: :coder))
+      end
+
+      it "keeps forced_tier set after the call" do
+        session.forced_tier = :coder
+        session.routing_enabled = false
+        allow(models_router).to receive(:generate).and_return(make_models_response_simple("answer"))
+
+        loop_with_router.run("Hello", session)
+
+        expect(session.forced_tier).to eq(:coder)
+      end
+    end
+
+    context "when routing_enabled is true and forced_tier is set (one-shot override)" do
+      it "passes forced_tier on the first generate call" do
+        session.forced_tier = :workhorse
+        session.routing_enabled = true
+        allow(models_router).to receive(:generate).and_return(make_models_response_simple("answer"))
+
+        loop_with_router.run("Hello", session)
+
+        expect(models_router).to have_received(:generate).with(hash_including(tier: :workhorse))
+      end
+
+      it "clears forced_tier after the first call" do
+        session.forced_tier = :workhorse
+        session.routing_enabled = true
+        allow(models_router).to receive(:generate).and_return(make_models_response_simple("answer"))
+
+        loop_with_router.run("Hello", session)
+
+        expect(session.forced_tier).to be_nil
+        expect(session.first_message_sent).to be true
+      end
+    end
+
+    context "when no forced_tier is set" do
+      it "passes tier: nil to router.generate" do
+        allow(models_router).to receive(:generate).and_return(make_models_response_simple("answer"))
+
+        loop_with_router.run("Hello", session)
+
+        expect(models_router).to have_received(:generate).with(hash_including(tier: nil))
+      end
     end
   end
 

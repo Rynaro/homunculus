@@ -172,4 +172,237 @@ RSpec.describe Homunculus::Interfaces::CLI do
       end
     end
   end
+
+  describe "model management commands" do
+    let(:cli) { described_class.new(config:) }
+    let(:session) { Homunculus::Session.new }
+
+    before do
+      cli.instance_variable_set(:@session, session)
+      cli.instance_variable_set(:@running, true)
+    end
+
+    describe "#handle_model_command" do
+      context "when no tier argument given" do
+        it "prints current override status when no forced_tier" do
+          output = +""
+          allow($stdout).to receive(:puts) { |msg| output << "#{msg}\n" }
+
+          cli.send(:handle_model_command, "model")
+
+          expect(output).to include("No model override")
+        end
+
+        it "prints the current forced_tier when set" do
+          session.forced_tier = :coder
+          output = +""
+          allow($stdout).to receive(:puts) { |msg| output << "#{msg}\n" }
+
+          cli.send(:handle_model_command, "model")
+
+          expect(output).to include("coder")
+        end
+      end
+
+      context "when a valid tier name is given" do
+        before do
+          cli.instance_variable_set(:@models_toml_data, { "tiers" => { "coder" => { "model" => "qwen2.5:14b" } } })
+        end
+
+        it "sets session.forced_tier" do
+          allow($stdout).to receive(:puts)
+
+          cli.send(:handle_model_command, "model coder")
+
+          expect(session.forced_tier).to eq(:coder)
+        end
+
+        it "resets first_message_sent" do
+          session.first_message_sent = true
+          allow($stdout).to receive(:puts)
+
+          cli.send(:handle_model_command, "model coder")
+
+          expect(session.first_message_sent).to be false
+        end
+
+        it "prints confirmation" do
+          output = +""
+          allow($stdout).to receive(:puts) { |msg| output << "#{msg}\n" }
+
+          cli.send(:handle_model_command, "model coder")
+
+          expect(output).to include("coder")
+        end
+      end
+
+      context "when an unknown tier name is given" do
+        before do
+          cli.instance_variable_set(:@models_toml_data, { "tiers" => { "coder" => {} } })
+        end
+
+        it "prints error listing valid tiers" do
+          output = +""
+          allow($stdout).to receive(:puts) { |msg| output << "#{msg}\n" }
+
+          cli.send(:handle_model_command, "model nonexistent")
+
+          expect(output).to include("Unknown tier")
+          expect(output).to include("coder")
+        end
+
+        it "does not change session.forced_tier" do
+          session.forced_tier = :coder
+          allow($stdout).to receive(:puts)
+
+          cli.send(:handle_model_command, "model nonexistent")
+
+          expect(session.forced_tier).to eq(:coder)
+        end
+      end
+    end
+
+    describe "#handle_routing_command" do
+      it "enables routing with 'routing on'" do
+        session.routing_enabled = false
+        allow($stdout).to receive(:puts)
+
+        cli.send(:handle_routing_command, "routing on")
+
+        expect(session.routing_enabled).to be true
+      end
+
+      it "disables routing with 'routing off'" do
+        session.routing_enabled = true
+        allow($stdout).to receive(:puts)
+
+        cli.send(:handle_routing_command, "routing off")
+
+        expect(session.routing_enabled).to be false
+      end
+
+      it "shows current state when no argument given" do
+        output = +""
+        allow($stdout).to receive(:puts) { |msg| output << "#{msg}\n" }
+
+        cli.send(:handle_routing_command, "routing ")
+
+        expect(output).to include("Routing:")
+      end
+
+      it "prints usage for unknown argument" do
+        output = +""
+        allow($stdout).to receive(:puts) { |msg| output << "#{msg}\n" }
+
+        cli.send(:handle_routing_command, "routing sideways")
+
+        expect(output).to include("Usage")
+      end
+    end
+
+    describe "#print_models" do
+      it "prints tier list when models_toml_data is available" do
+        cli.instance_variable_set(
+          :@models_toml_data,
+          { "tiers" => { "workhorse" => { "model" => "qwen2.5:14b", "description" => "Default local tier" } } }
+        )
+        output = +""
+        allow($stdout).to receive(:puts) { |msg| output << "#{msg}\n" }
+
+        cli.send(:print_models)
+
+        expect(output).to include("workhorse")
+        expect(output).to include("qwen2.5:14b")
+      end
+
+      it "shows routing state" do
+        cli.instance_variable_set(:@models_toml_data, nil)
+        output = +""
+        allow($stdout).to receive(:puts) { |msg| output << "#{msg}\n" }
+
+        cli.send(:print_models)
+
+        expect(output).to include("Routing:")
+      end
+    end
+
+    describe "#available_tier_names" do
+      it "returns empty array when models_toml_data is nil" do
+        cli.instance_variable_set(:@models_toml_data, nil)
+
+        expect(cli.send(:available_tier_names)).to eq([])
+      end
+
+      it "returns tier names from models_toml_data" do
+        cli.instance_variable_set(:@models_toml_data, { "tiers" => { "coder" => {}, "workhorse" => {} } })
+
+        expect(cli.send(:available_tier_names)).to contain_exactly("coder", "workhorse")
+      end
+    end
+  end
+
+  describe "context window display" do
+    let(:cli) { described_class.new(config:) }
+
+    before do
+      allow(Sequel).to receive(:sqlite) { Sequel.connect("sqlite:/") }
+    end
+
+    describe "#resolved_context_window" do
+      it "returns config local context_window when @current_context_window is nil" do
+        cli.instance_variable_set(:@current_context_window, nil)
+        expect(cli.send(:resolved_context_window)).to eq(config.models[:local].context_window)
+      end
+
+      it "returns @current_context_window when set" do
+        cli.instance_variable_set(:@current_context_window, 16_384)
+        expect(cli.send(:resolved_context_window)).to eq(16_384)
+      end
+    end
+
+    describe "#update_context_window_from_result" do
+      it "sets @current_context_window from result" do
+        session = Homunculus::Session.new
+        result = Homunculus::Agent::AgentResult.completed("ok", session:, context_window: 200_000)
+        cli.send(:update_context_window_from_result, result)
+        expect(cli.instance_variable_get(:@current_context_window)).to eq(200_000)
+      end
+
+      it "does not update when result has no context_window" do
+        cli.instance_variable_set(:@current_context_window, 32_768)
+        session = Homunculus::Session.new
+        result = Homunculus::Agent::AgentResult.completed("ok", session:)
+        cli.send(:update_context_window_from_result, result)
+        expect(cli.instance_variable_get(:@current_context_window)).to eq(32_768)
+      end
+    end
+
+    describe "#build_usage_summary_string" do
+      let(:session) { Homunculus::Session.new }
+
+      before do
+        cli.instance_variable_set(:@session, session)
+        session.track_usage(
+          Homunculus::Agent::ModelProvider::TokenUsage.new(input_tokens: 1000, output_tokens: 500)
+        )
+      end
+
+      it "returns base string without ctx info when ctx_win is nil" do
+        result = cli.send(:build_usage_summary_string, nil)
+        expect(result).to eq("  [tokens: 1000↓ 500↑ | turns: 0]")
+        expect(result).not_to include("ctx:")
+      end
+
+      it "includes ctx usage when ctx_win is provided" do
+        result = cli.send(:build_usage_summary_string, 32_768)
+        expect(result).to include("ctx: 1500/32768")
+        expect(result).to match(/\(\d+%\)/)
+      end
+
+      it "calculates percentage correctly" do
+        result = cli.send(:build_usage_summary_string, 10_000)
+        expect(result).to include("(15%)")
+      end
+    end
+  end
 end

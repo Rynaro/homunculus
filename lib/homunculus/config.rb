@@ -393,11 +393,11 @@ module Homunculus
           raw["familiars"]["ntfy"] ||= {}
           raw["familiars"]["ntfy"]["topic"] = ENV.fetch("FAMILIARS_NTFY_TOPIC")
         end
-        if ENV.key?("FAMILIARS_NTFY_TOKEN")
-          raw["familiars"] ||= {}
-          raw["familiars"]["ntfy"] ||= {}
-          raw["familiars"]["ntfy"]["publish_token"] = ENV.fetch("FAMILIARS_NTFY_TOKEN")
-        end
+        return unless ENV.key?("FAMILIARS_NTFY_TOKEN")
+
+        raw["familiars"] ||= {}
+        raw["familiars"]["ntfy"] ||= {}
+        raw["familiars"]["ntfy"]["publish_token"] = ENV.fetch("FAMILIARS_NTFY_TOKEN")
       end
     end
   end
