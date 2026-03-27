@@ -64,6 +64,11 @@ module Homunculus
           register_core_tools(registry)
           register_memory_tools(registry) if @memory_store
           register_sag_tool(registry) if @config.sag.enabled
+
+          if @config.familiars.enabled && @familiars_dispatcher
+            registry.register(Tools::SendNotification.new(familiars_dispatcher: @familiars_dispatcher))
+          end
+
           registry
         end
 
@@ -183,10 +188,15 @@ module Homunculus
 
         def build_notification_service
           service = Scheduler::Notification.new(config: @config)
-          service.deliver_fn = lambda { |text, _priority|
+          interface_fn = lambda { |text, _priority|
             push_info_message("[Scheduler] #{text}")
             refresh_all
           }
+          service.deliver_fn = wrap_deliver_fn_with_familiars(
+            original_fn: interface_fn,
+            dispatcher: @familiars_dispatcher,
+            title: "Homunculus Scheduler"
+          )
           service
         end
 

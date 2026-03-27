@@ -21,6 +21,7 @@ require_relative "../agent/warmup"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
 require_relative "sag_reachability"
+require_relative "familiars_setup"
 
 module Homunculus
   module Interfaces
@@ -34,6 +35,7 @@ module Homunculus
       include TUI::SetupHelpers
       include TUI::MessageHelpers
       include TUI::ModelManagementHelpers
+      include FamiliarsSetup
 
       HEADER_ROWS = 3
       STATUS_ROWS = 1
@@ -120,6 +122,8 @@ module Homunculus
           @provider = Agent::ModelProvider.new(resolve_model_config)
         end
 
+        # Familiars must be initialized before tool registry (send_notification needs the dispatcher)
+        @familiars_dispatcher = build_familiars_dispatcher
         @tool_registry = build_tool_registry
         warn_sag_disabled unless @config.sag.enabled
         @prompt_builder = Agent::PromptBuilder.new(
@@ -280,6 +284,9 @@ module Homunculus
             needs_full = true
           when :notification
             handle_notification_event(event)
+            needs_full = true
+          when :familiars_test_result
+            push_info_message("Familiars test results:\n#{event[:result]}")
             needs_full = true
           end
         end
@@ -699,8 +706,63 @@ module Homunculus
         when :show_models then show_models
         when :set_model   then handle_model_command(full_input)
         when :set_routing then handle_routing_command(full_input)
+        when :handle_familiars_command then handle_familiars_command(full_input)
         when :quit then push_info_message("Shutting down...")
                         @event_loop&.push({ type: :shutdown })
+        end
+      end
+
+      def handle_familiars_command(full_input)
+        parts = full_input.strip.split(/\s+/, 2)
+        subcommand = parts[1]&.strip&.downcase
+
+        case subcommand
+        when "status"
+          show_familiars_status
+        when "test"
+          run_familiars_test
+        else
+          push_info_message("Usage: /familiars status | /familiars test")
+        end
+        refresh_all
+      end
+
+      def show_familiars_status
+        unless @config.familiars.enabled
+          push_info_message("Familiars: disabled (set FAMILIARS_ENABLED=true to enable)")
+          return
+        end
+        unless @familiars_dispatcher
+          push_info_message("Familiars: enabled in config but dispatcher not initialized")
+          return
+        end
+
+        lines = ["Familiars Status:"]
+        @familiars_dispatcher.status.each do |name, info|
+          health = info[:healthy] ? "healthy" : "unreachable"
+          enabled = info[:enabled] ? "enabled" : "disabled"
+          lines << "  #{name}: #{enabled}, #{health}, #{info[:deliveries]} delivered, #{info[:failures]} failed"
+        end
+        push_info_message(lines.join("\n"))
+      end
+
+      def run_familiars_test
+        unless @config.familiars.enabled && @familiars_dispatcher
+          push_info_message("Familiars is disabled.")
+          return
+        end
+
+        push_info_message("Sending Familiars test notification...")
+        Thread.new do
+          results = @familiars_dispatcher.notify(
+            title: "Homunculus Test",
+            message: "Familiars test from TUI. If you see this, notifications are working!",
+            priority: :normal
+          )
+          result_lines = results.map { |ch, r| "  #{ch}: #{r}" }.join("\n")
+          @event_loop&.push({ type: :familiars_test_result, result: result_lines })
+        rescue StandardError => e
+          logger.error("Familiars test error", error: e.message)
         end
       end
 

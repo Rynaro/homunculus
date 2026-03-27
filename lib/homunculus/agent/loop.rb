@@ -28,14 +28,15 @@ module Homunculus
       #   models_router:  Models::Router instance (CLI streaming mode)
       #   stream_callback: Lambda receiving streamed text chunks (models_router mode)
       def initialize(config:, tools:, prompt_builder:, audit:, **routing)
-        @config          = config
-        @router          = routing[:router]
-        @models_router   = routing[:models_router]
-        @stream_callback = routing[:stream_callback]
-        @status_callback = routing[:status_callback]
-        @tools           = tools
-        @prompt_builder  = prompt_builder
-        @audit           = audit
+        @config              = config
+        @router              = routing[:router]
+        @models_router       = routing[:models_router]
+        @stream_callback     = routing[:stream_callback]
+        @status_callback     = routing[:status_callback]
+        @familiars_dispatcher = routing[:familiars_dispatcher]
+        @tools               = tools
+        @prompt_builder      = prompt_builder
+        @audit               = audit
 
         # Support both single-provider (backward compat) and multi-provider (routing) modes
         if routing[:providers]
@@ -85,6 +86,7 @@ module Homunculus
           return result if result
         end
 
+        notify_familiars_event(:error, session:, detail: "Max turns (#{max_turns}) exceeded")
         AgentResult.error("Max turns (#{max_turns}) exceeded", session:)
       end
 
@@ -321,6 +323,7 @@ module Homunculus
         case response.stop_reason
         when "end_turn", "stop"
           session.add_message(role: :assistant, content: response.content)
+          notify_familiars_event(:session_complete, session:)
           AgentResult.completed(response.content, session:, tier:, model:, escalated_from:, context_window: ctx_window)
 
         when "tool_use"
@@ -331,6 +334,7 @@ module Homunculus
 
             if @tools.requires_confirmation?(tool_call.name)
               session.pending_tool_call = tool_call
+              notify_familiars_event(:confirmation_needed, session:, tool_name: tool_call.name)
               return AgentResult.pending_confirmation(tool_call, session:, context_window: ctx_window)
             end
 
@@ -544,6 +548,56 @@ module Homunculus
         Tools::Result.fail("Tool error: #{e.message}")
       ensure
         @status_callback&.call(:tool_end, tool_call.name)
+      end
+
+      # ── Familiars Notifications ───────────────────────────────────
+
+      # Dispatch a Familiars notification for a named event, if the dispatcher
+      # is configured and the event is in the notify_on list.
+      # Failures are logged and never propagate — agent loop is never blocked.
+      def notify_familiars_event(event, session: nil, tool_name: nil, detail: nil)
+        return unless @familiars_dispatcher
+        return unless familiars_event_enabled?(event)
+
+        title, message, priority = build_familiars_notification(event, session:, tool_name:, detail:)
+        @familiars_dispatcher.notify(title:, message:, priority:)
+      rescue StandardError => e
+        logger.warn("Familiars event notification failed", event:, error: e.message)
+      end
+
+      def familiars_event_enabled?(event)
+        @config.familiars.notify_on.include?(event.to_s)
+      rescue StandardError
+        false
+      end
+
+      def build_familiars_notification(event, session: nil, tool_name: nil, detail: nil)
+        raw_id = session&.id
+        session_id_short = raw_id ? raw_id.to_s.slice(0, 8) : "?"
+        case event
+        when :session_complete
+          [
+            "Session complete",
+            "Homunculus finished your session (#{session_id_short}). " \
+            "#{session&.turn_count || 0} turns, " \
+            "#{(session&.total_input_tokens || 0) + (session&.total_output_tokens || 0)} total tokens.",
+            :normal
+          ]
+        when :confirmation_needed
+          [
+            "Confirmation needed",
+            "Homunculus is waiting for your approval to run: #{tool_name || "unknown tool"}",
+            :high
+          ]
+        when :error
+          [
+            "Agent error",
+            "Homunculus encountered an error: #{detail || "unknown error"} (session #{session_id_short})",
+            :high
+          ]
+        else
+          ["Homunculus", event.to_s, :normal]
+        end
       end
     end
 

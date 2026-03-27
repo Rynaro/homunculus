@@ -13,6 +13,7 @@ SimpleCov.start do
   add_group "Interfaces", "lib/homunculus/interfaces"
   add_group "Scheduler", "lib/homunculus/scheduler"
   add_group "Skills", "lib/homunculus/skills"
+  add_group "Familiars", "lib/homunculus/familiars"
 
   # Raise these thresholds as coverage improves
   minimum_coverage 75
@@ -97,6 +98,12 @@ require_relative "../lib/homunculus/sag/post_processor"
 require_relative "../lib/homunculus/sag/pipeline"
 require_relative "../lib/homunculus/tools/web_research"
 require_relative "../lib/homunculus/interfaces/telegram"
+require_relative "../lib/homunculus/familiars/channel"
+require_relative "../lib/homunculus/familiars/registry"
+require_relative "../lib/homunculus/familiars/dispatcher"
+require_relative "../lib/homunculus/familiars/channels/log"
+require_relative "../lib/homunculus/familiars/channels/ntfy"
+require_relative "../lib/homunculus/tools/send_notification"
 
 RSpec.configure do |config|
   config.expect_with :rspec do |expectations|

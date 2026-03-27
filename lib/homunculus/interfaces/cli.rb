@@ -6,12 +6,14 @@ require_relative "../agent/warmup"
 require_relative "../sag/llm_adapter"
 require_relative "../sag/pipeline_factory"
 require_relative "sag_reachability"
+require_relative "familiars_setup"
 
 module Homunculus
   module Interfaces
     class CLI
       include SemanticLogger::Loggable
       include SAGReachability
+      include FamiliarsSetup
 
       BANNER = <<~BANNER
         🧪 Homunculus v%<version>s — Personal AI Agent
@@ -66,6 +68,8 @@ module Homunculus
           @provider = Agent::ModelProvider.new(model_config)
         end
 
+        # Familiars must be initialized before tool registry (send_notification needs the dispatcher)
+        @familiars_dispatcher = build_familiars_dispatcher
         @tool_registry = build_tool_registry
         warn_sag_disabled unless @config.sag.enabled
         @prompt_builder = Agent::PromptBuilder.new(
@@ -177,6 +181,11 @@ module Homunculus
         end
 
         register_sag_tool(registry) if @config.sag.enabled
+
+        if @config.familiars.enabled && @familiars_dispatcher
+          registry.register(Tools::SendNotification.new(familiars_dispatcher: @familiars_dispatcher))
+        end
+
         registry
       end
 
@@ -264,6 +273,10 @@ module Homunculus
             print_status
           when "scheduler"
             print_scheduler_status
+          when "familiars status"
+            print_familiars_status
+          when "familiars test"
+            run_familiars_test
           when "confirm"
             handle_confirm
           when "deny"
@@ -465,8 +478,10 @@ module Homunculus
             models         — List available model tiers
             model <tier>   — Set model tier override
             routing on|off — Toggle automatic model routing
-            scheduler      — Show scheduler and heartbeat status
-            confirm        — Approve a pending tool action
+            scheduler         — Show scheduler and heartbeat status
+            familiars status  — Show Familiars notification channel status
+            familiars test    — Send a test notification to all channels
+            confirm           — Approve a pending tool action
             deny           — Reject a pending tool action
             quit/exit      — Exit the CLI
 
@@ -645,13 +660,19 @@ module Homunculus
       def build_notification_service
         service = Scheduler::Notification.new(config: @config)
 
-        service.deliver_fn = lambda { |text, _priority|
+        interface_fn = lambda { |text, _priority|
           $stdout.puts "\n#{colorize("─" * 60, :magenta)}"
           $stdout.puts "#{colorize("🔔 Scheduler:", :magenta)} #{text}"
           $stdout.puts colorize("─" * 60, :magenta)
           $stdout.print "\n#{colorize("You: ", :cyan)}"
           $stdout.flush
         }
+
+        service.deliver_fn = wrap_deliver_fn_with_familiars(
+          original_fn: interface_fn,
+          dispatcher: @familiars_dispatcher,
+          title: "Homunculus Scheduler"
+        )
 
         service
       end
@@ -696,6 +717,44 @@ module Homunculus
             time = exec[:executed_at]&.strftime("%Y-%m-%d %H:%M") || "?"
             puts "    #{time} — #{exec[:status]} (#{exec[:duration_ms]}ms)"
           end
+        end
+      end
+
+      def print_familiars_status
+        unless @config.familiars.enabled
+          puts colorize("Familiars: disabled (set FAMILIARS_ENABLED=true to enable)", :yellow)
+          return
+        end
+
+        unless @familiars_dispatcher
+          puts colorize("Familiars: enabled in config but dispatcher not initialized", :yellow)
+          return
+        end
+
+        puts "\n#{colorize("Familiars Status:", :cyan)}"
+        @familiars_dispatcher.status.each do |name, info|
+          health_str = info[:healthy] ? colorize("healthy", :green) : colorize("unreachable", :red)
+          enabled_str = info[:enabled] ? colorize("enabled", :green) : colorize("disabled", :yellow)
+          puts "  #{colorize(name.to_s, :green)}: #{enabled_str}, #{health_str}, " \
+               "#{info[:deliveries]} delivered, #{info[:failures]} failed"
+        end
+      end
+
+      def run_familiars_test
+        unless @config.familiars.enabled && @familiars_dispatcher
+          puts colorize("Familiars is disabled.", :yellow)
+          return
+        end
+
+        puts colorize("Sending test notification to all enabled Familiars channels...", :cyan)
+        results = @familiars_dispatcher.notify(
+          title: "Homunculus Test",
+          message: "Familiars test notification from CLI. If you see this, notifications are working!",
+          priority: :normal
+        )
+        results.each do |channel, result|
+          icon = result == :delivered ? colorize("✓", :green) : colorize("✗", :red)
+          puts "  #{icon} #{channel}: #{result}"
         end
       end
 
