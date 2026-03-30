@@ -39,7 +39,7 @@ gem 'nokogiri', '~> 1.16'
 gem 'mqtt', '~> 0.6'
 
 # Telegram bot
-gem 'telegram-bot-ruby', '~> 2.0'
+gem 'telegram-bot-ruby', '~> 2.6'
 
 # Scheduling
 gem 'rufus-scheduler', '~> 3.9'
