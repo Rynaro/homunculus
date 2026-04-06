@@ -20,7 +20,7 @@ gem 'dry-types', '~> 1.7'
 gem 'httpx', '~> 1.4'
 
 # Database
-gem 'sequel', '~> 5.86'
+gem 'sequel', '~> 5.103'
 gem 'sqlite3', '~> 2.5'
 
 # Logging
