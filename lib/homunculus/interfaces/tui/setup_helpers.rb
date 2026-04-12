@@ -19,10 +19,24 @@ module Homunculus
           @ollama_provider = Agent::Models::OllamaProvider.new(config: ollama_config)
           default_model    = @config.models[:local]&.default_model || @config.models[:local]&.model
           @models_toml_data = apply_default_model(models_toml, default_model)
+          providers = { ollama: @ollama_provider }
+          llamacpp_raw = models_toml.dig("providers", "llamacpp")
+          if llamacpp_raw
+            llamacpp_config = build_llamacpp_config(models_toml)
+            @llamacpp_provider = Agent::Models::LlamaCppProvider.new(config: llamacpp_config)
+            providers[:llamacpp] = @llamacpp_provider
+          end
           @models_router = Agent::Models::Router.new(
             config: @models_toml_data,
-            providers: { ollama: @ollama_provider }
+            providers:
           )
+        end
+
+        def build_llamacpp_config(models_toml)
+          cfg = (models_toml.dig("providers", "llamacpp") || {}).dup
+          cfg["base_url"] ||= @config.models[:llamacpp]&.base_url || "http://127.0.0.1:8080"
+          cfg["timeout_seconds"] ||= @config.models[:llamacpp]&.timeout_seconds || 300
+          cfg
         end
 
         def build_ollama_config(models_toml)
