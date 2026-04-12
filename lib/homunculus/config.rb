@@ -287,52 +287,43 @@ module Homunculus
       MQTTConfig.new(mqtt_hash)
     end
 
+    ENV_OVERRIDES = [
+      { env: "ANTHROPIC_API_KEY",       path: %w[models escalation api_key], scope: :existing_parent, allow_nil: true },
+      { env: "ESCALATION_ENABLED",      path: %w[models escalation enabled], scope: :existing_parent,
+        transform: ->(v) { v.downcase == "true" } },
+      { env: "GATEWAY_AUTH_TOKEN_HASH", path: %w[gateway auth_token_hash] },
+      { env: "TELEGRAM_BOT_TOKEN",      path: %w[interfaces telegram bot_token] },
+      { env: "OLLAMA_BASE_URL",         path: %w[models local base_url] },
+      { env: "LLAMACPP_BASE_URL",       path: %w[models llamacpp base_url] },
+      { env: "SEARXNG_URL",             path: %w[sag searxng_url] },
+      { env: "OLLAMA_TIMEOUT_SECONDS",  path: %w[models local timeout_seconds], transform: :to_i.to_proc }
+    ].freeze
+    private_constant :ENV_OVERRIDES
+
     class << self
       private
 
       def override_from_env!(raw)
-        # Environment variables take precedence over config file
-        raw.dig("models", "escalation")&.merge!(
-          "api_key" => ENV.fetch("ANTHROPIC_API_KEY", nil)
-        )
+        ENV_OVERRIDES.each { |rule| apply_env_override(raw, rule) }
+      end
 
-        # Escalation enabled/disabled from env (local-only mode for experimenting with local models)
-        if ENV.key?("ESCALATION_ENABLED") && raw.dig("models", "escalation")
-          raw["models"]["escalation"]["enabled"] = ENV.fetch("ESCALATION_ENABLED").downcase == "true"
-        end
+      def apply_env_override(raw, rule)
+        return unless rule[:allow_nil] || ENV.key?(rule[:env])
 
-        # Gateway auth token from env
-        if ENV.key?("GATEWAY_AUTH_TOKEN_HASH")
-          raw["gateway"] ||= {}
-          raw["gateway"]["auth_token_hash"] = ENV.fetch("GATEWAY_AUTH_TOKEN_HASH")
-        end
+        value = rule[:transform] ? rule[:transform].call(ENV.fetch(rule[:env])) : ENV.fetch(rule[:env], nil)
+        assign_nested(raw, rule[:path], value, scope: rule[:scope])
+      end
 
-        # Telegram bot token from env
-        if ENV.key?("TELEGRAM_BOT_TOKEN")
-          raw["interfaces"] ||= {}
-          raw["interfaces"]["telegram"] ||= {}
-          raw["interfaces"]["telegram"]["bot_token"] = ENV.fetch("TELEGRAM_BOT_TOKEN")
-        end
+      def assign_nested(raw, path, value, scope: nil)
+        *parents, leaf = path
+        parent = scope == :existing_parent ? raw.dig(*parents) : ensure_nested_hash(raw, parents)
+        return unless parent.is_a?(Hash)
 
-        # Ollama base URL from env (supports host or dockerized Ollama)
-        if ENV.key?("OLLAMA_BASE_URL")
-          raw["models"] ||= {}
-          raw["models"]["local"] ||= {}
-          raw["models"]["local"]["base_url"] = ENV.fetch("OLLAMA_BASE_URL")
-        end
+        parent[leaf] = value
+      end
 
-        # SearXNG URL from env (supports host or dockerized SearXNG)
-        if ENV.key?("SEARXNG_URL")
-          raw["sag"] ||= {}
-          raw["sag"]["searxng_url"] = ENV.fetch("SEARXNG_URL")
-        end
-
-        # Ollama request timeout from env (e.g. Docker / slow instances)
-        return unless ENV.key?("OLLAMA_TIMEOUT_SECONDS")
-
-        raw["models"] ||= {}
-        raw["models"]["local"] ||= {}
-        raw["models"]["local"]["timeout_seconds"] = ENV.fetch("OLLAMA_TIMEOUT_SECONDS").to_i
+      def ensure_nested_hash(raw, keys)
+        keys.inject(raw) { |node, key| node[key] ||= {} }
       end
     end
   end
