@@ -26,6 +26,7 @@ module Homunculus
           @cached_status = {
             ollama: check_ollama,
             anthropic: check_anthropic,
+            llamacpp: check_llamacpp,
             gpu: gpu_status,
             checked_at: Time.now.iso8601
           }
@@ -55,6 +56,31 @@ module Homunculus
           ollama.list_models
         rescue StandardError => e
           @logger.debug("Failed to list Ollama models", error: e.message)
+          []
+        end
+
+        # Is llama-server responding to health checks?
+        # @return [Boolean]
+        def llamacpp_healthy?
+          llamacpp = @providers[:llamacpp]
+          return false unless llamacpp
+
+          llamacpp.available?
+        rescue StandardError => e
+          @logger.debug("LlamaCpp health check failed", error: e.message)
+          false
+        end
+
+        # List models currently loaded in llama-server.
+        # llama-server typically loads a single model at startup.
+        # @return [Array<String>]
+        def llamacpp_loaded_models
+          llamacpp = @providers[:llamacpp]
+          return [] unless llamacpp
+
+          llamacpp_fetch_models(llamacpp)
+        rescue StandardError => e
+          @logger.debug("Failed to list LlamaCpp models", error: e.message)
           []
         end
 
@@ -126,6 +152,36 @@ module Homunculus
           { available: anthropic.available? }
         rescue StandardError => e
           { available: false, error: e.message }
+        end
+
+        def check_llamacpp
+          llamacpp = @providers[:llamacpp]
+          return { available: false, reason: "not configured" } unless llamacpp
+
+          available = llamacpp.available?
+          result = { available: available }
+
+          if available
+            models = llamacpp_fetch_models(llamacpp)
+            result[:loaded_models] = models
+            result[:model_count] = models.size
+          end
+
+          result
+        rescue StandardError => e
+          { available: false, error: e.message }
+        end
+
+        def llamacpp_fetch_models(llamacpp)
+          base_url = llamacpp.instance_variable_get(:@base_url)
+          response = HTTPX.get("#{base_url}/v1/models")
+          return [] unless response.respond_to?(:status) && response.status == 200
+
+          parsed = JSON.parse(response.body.to_s)
+          (parsed["data"] || []).map { |m| m["id"].to_s }
+        rescue StandardError => e
+          @logger.debug("LlamaCpp model list fetch failed", error: e.message)
+          []
         end
 
         def parse_nvidia_smi
