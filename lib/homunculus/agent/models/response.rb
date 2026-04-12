@@ -3,13 +3,16 @@
 module Homunculus
   module Agent
     module Models
+      # Providers that run inference locally (no cloud cost).
+      LOCAL_PROVIDERS = %i[ollama llamacpp].freeze
+
       # Unified response object for all LLM providers.
       # Immutable value type using Ruby's Data.define.
       Response = Data.define(
         :content,           # String — the text response
         :tool_calls,        # Array<Hash> — [{name:, arguments:}] or empty
         :model,             # String — actual model used
-        :provider,          # Symbol — :ollama or :anthropic
+        :provider,          # Symbol — :ollama, :llamacpp, or :anthropic
         :tier,              # Symbol — :whisper, :workhorse, :coder, :thinker, :cloud_*
         :usage,             # Hash — {prompt_tokens:, completion_tokens:, total_tokens:}
         :latency_ms,        # Integer — total request time
@@ -18,8 +21,8 @@ module Homunculus
         :escalated_from,    # Symbol or nil — if this was an escalation, what tier it came from
         :metadata           # Hash — provider-specific extra data
       ) do
-        def local? = provider == :ollama
-        def cloud? = provider == :anthropic
+        def local? = LOCAL_PROVIDERS.include?(provider)
+        def cloud? = !local?
         def tool_use? = tool_calls.is_a?(Array) && !tool_calls.empty?
         def escalated? = !escalated_from.nil?
 

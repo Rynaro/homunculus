@@ -37,6 +37,27 @@ services:
     ports:
       - "127.0.0.1:11434:11434"
 
+  # Optional: llama.cpp server running as a Docker service for development.
+  # Start with: docker compose -f docker-compose.dev.yml --profile llamacpp up -d
+  # REQUIRED: Add LLAMACPP_BASE_URL=http://llamacpp:8080 to .env — without it,
+  # Homunculus will timeout trying to reach llama-server via host.docker.internal.
+  llamacpp:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: homunculus-dev-llamacpp
+    profiles:
+      - llamacpp
+    volumes:
+      - llamacpp-dev-models:/models
+      - llamacpp-dev-lora:/lora
+    networks:
+      - homunculus-dev-net
+      - llamacpp-dev-egress
+    ports:
+      - "127.0.0.1:8080:8080"
+    security_opt:
+      - no-new-privileges:true
+    command: ["--model", "/models/model.gguf", "--port", "8080", "--host", "0.0.0.0", "--n-gpu-layers", "0"]
+
   # Optional: SearXNG running as a Docker service for development.
   # Start with: docker compose -f docker-compose.dev.yml --profile searxng up -d
   searxng:
@@ -79,6 +100,8 @@ networks:
   homunculus-dev-net:
     driver: bridge
     internal: true
+  llamacpp-dev-egress:
+    driver: bridge  # Allows llama-server to pull models from Hugging Face / GGUF sources
   searxng-dev-egress:
     driver: bridge  # Allows SearXNG to reach external search engines
 
@@ -86,4 +109,8 @@ volumes:
   homunculus-dev-gems:
     driver: local
   ollama-dev-data:
+    driver: local
+  llamacpp-dev-models:
+    driver: local
+  llamacpp-dev-lora:
     driver: local

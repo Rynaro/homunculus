@@ -113,7 +113,10 @@ module Homunculus
           @models_toml_data["tiers"]["workhorse"] ||= {}
           @models_toml_data["tiers"]["workhorse"] = @models_toml_data["tiers"]["workhorse"].merge("model" => default_model)
         end
-        @models_router = Agent::Models::Router.new(config: @models_toml_data, providers: { ollama: @ollama_provider })
+        @models_router = Agent::Models::Router.new(
+          config: @models_toml_data,
+          providers: build_model_providers(models_toml)
+        )
       end
 
       def build_loop_with_models_router
@@ -132,6 +135,19 @@ module Homunculus
           prompt_builder: @prompt_builder,
           audit: @audit
         )
+      end
+
+      def build_model_providers(models_toml)
+        providers = { ollama: @ollama_provider }
+        llamacpp_raw = models_toml.dig("providers", "llamacpp")
+        return providers unless llamacpp_raw
+
+        llamacpp_config = llamacpp_raw.dup
+        llamacpp_config["base_url"] ||= @config.models[:llamacpp]&.base_url || "http://127.0.0.1:8080"
+        llamacpp_config["timeout_seconds"] ||= @config.models[:llamacpp]&.timeout_seconds || 300
+        @llamacpp_provider = Agent::Models::LlamaCppProvider.new(config: llamacpp_config)
+        providers[:llamacpp] = @llamacpp_provider
+        providers
       end
 
       def resolve_model_config

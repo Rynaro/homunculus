@@ -12,6 +12,9 @@ provider = "ollama"                    # Default to local inference
 timeout_seconds = 120
 max_retries = 2
 escalation_enabled = true
+# Which local GPU provider gets exclusive access (prevents VRAM exhaustion).
+# Valid values: "ollama", "llamacpp", or "" (empty = no exclusivity, both can run).
+exclusive_gpu_provider = ""
 
 # ── Model Tiers ──────────────────────────────────────────────────────────────
 # Each tier maps to a specific model and inference profile.
@@ -77,6 +80,13 @@ temperature = 0.7
 base_url = "http://127.0.0.1:11434"   # Override with OLLAMA_BASE_URL env var
 keep_alive = "30m"
 health_check_interval_seconds = 60
+
+[providers.llamacpp]
+# llama.cpp server endpoint (host or dockerized via llamacpp profile)
+# Override: LLAMACPP_BASE_URL=http://llamacpp:8080 in .env
+base_url = "http://127.0.0.1:8080"
+health_check_interval_seconds = 60
+timeout_seconds = 300
 
 [providers.anthropic]
 # API key comes from ENV["ANTHROPIC_API_KEY"] — NEVER put keys in config files

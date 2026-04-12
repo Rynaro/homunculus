@@ -56,6 +56,36 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Optional: llama.cpp server running as a Docker service.
+  # Start with: docker compose --profile llamacpp up -d
+  # REQUIRED: Add LLAMACPP_BASE_URL=http://llamacpp:8080 to .env — without it,
+  # Homunculus will timeout trying to reach llama-server via host.docker.internal.
+  # Place your GGUF model at the path referenced by --model below, or mount a
+  # host directory over llamacpp-models and adjust the --model flag accordingly.
+  llamacpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: homunculus-llamacpp
+    profiles:
+      - llamacpp
+    volumes:
+      - llamacpp-models:/models
+      - llamacpp-lora:/lora
+    networks:
+      - homunculus-net
+      - llamacpp-egress
+    ports:
+      - "127.0.0.1:8080:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    security_opt:
+      - no-new-privileges:true
+    command: ["--model", "/models/model.gguf", "--port", "8080", "--host", "0.0.0.0", "--n-gpu-layers", "999"]
+
   # Optional: SearXNG running as a Docker service.
   # Start with: docker compose --profile searxng up -d
   # REQUIRED: Add SEARXNG_URL=http://searxng:8080 to .env — without it,
@@ -104,6 +134,8 @@ networks:
     driver: bridge  # Allows outbound to Telegram API
   ollama-egress:
     driver: bridge  # Allows Ollama to pull models from registry.ollama.ai
+  llamacpp-egress:
+    driver: bridge  # Allows llama-server to pull models from Hugging Face / GGUF sources
   searxng-egress:
     driver: bridge  # Allows SearXNG to reach external search engines
 
@@ -111,4 +143,8 @@ volumes:
   homunculus-data:
     driver: local
   ollama-data:
+    driver: local
+  llamacpp-models:
+    driver: local
+  llamacpp-lora:
     driver: local

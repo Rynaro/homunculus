@@ -14,6 +14,8 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+echo -e "${YELLOW}[DEPRECATED]${NC} bin/ollama is deprecated. Use bin/models instead." >&2
+
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Optional configuration: BIN_OLLAMA_USE_DOCKER=1, OLLAMA_CONTAINER, AGENT_CONTAINER
 [[ -f "$PROJECT_ROOT/config/ollama.env" ]] && source "$PROJECT_ROOT/config/ollama.env"
