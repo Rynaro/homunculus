@@ -24,7 +24,7 @@ gem 'sequel', '~> 5.86'
 gem 'sqlite3', '~> 2.5'
 
 # Logging
-gem 'semantic_logger', '~> 4.16'
+gem 'semantic_logger', '~> 4.18'
 
 # Security
 gem 'bcrypt', '~> 3.1'
